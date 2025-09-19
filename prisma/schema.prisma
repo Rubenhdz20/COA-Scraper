@@ -1,12 +1,35 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+model CoaDocument {
+  id              String   @id @default(cuid())
+  filename        String
+  originalName    String
+  fileSize        Int
+  uploadDate      DateTime @default(now())
+  processingStatus String  @default("pending")
+  
+  batchId         String?
+  strainName      String?
+  thcPercentage   Float?
+  cbdPercentage   Float?
+  totalCannabinoids Float?
+  labName         String?
+  testDate        String?
+  
+  rawText         String?
+  ocrProvider     String?
+  confidence      Float?
+  terpenes        String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("coa_documents")
 }

@@ -1,103 +1,91 @@
-import Image from "next/image";
-
-export default function Home() {
+export default function HomePage() {
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="space-y-8">
+      {/* Hero Section */}
+      <div className="text-center">
+        <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">
+          Cannabis COA Data Extraction
+        </h1>
+        <p className="mt-4 text-lg text-gray-600 max-w-2xl mx-auto">
+          Upload your Certificate of Analysis (COA) PDFs and automatically extract 
+          key data including THC%, CBD%, terpenes, strain names, and batch IDs.
+        </p>
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      {/* Stats Section */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-lg shadow-sm border">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-blue-600">Fast</div>
+            <div className="text-sm text-gray-600 mt-1">
+              Process COAs in seconds with AI-powered OCR
+            </div>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <div className="bg-white p-6 rounded-lg shadow-sm border">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-green-600">Accurate</div>
+            <div className="text-sm text-gray-600 mt-1">
+              High-precision extraction with confidence scoring
+            </div>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-lg shadow-sm border">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-purple-600">Automated</div>
+            <div className="text-sm text-gray-600 mt-1">
+              No manual data entry required
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Upload Section Placeholder */}
+      <div className="bg-white rounded-lg shadow-sm border p-8">
+        <div className="text-center">
+          <div className="w-24 h-24 mx-auto bg-gray-100 rounded-full flex items-center justify-center mb-4">
+            <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            Upload COA Documents
+          </h3>
+          <p className="text-gray-600 mb-4">
+            Drag and drop your PDF files here or click to browse
+          </p>
+          <div className="border-2 border-dashed border-gray-300 rounded-lg p-12">
+            <p className="text-gray-500">
+              🚧 File upload component coming in Phase 2!
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Supported Data Section */}
+      <div className="bg-blue-50 rounded-lg p-6">
+        <h3 className="text-lg font-medium text-blue-900 mb-4">
+          Data We Extract
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="text-center">
+            <div className="font-medium text-blue-800">Batch ID</div>
+            <div className="text-sm text-blue-600">Unique identifiers</div>
+          </div>
+          <div className="text-center">
+            <div className="font-medium text-blue-800">Strain Name</div>
+            <div className="text-sm text-blue-600">Product varieties</div>
+          </div>
+          <div className="text-center">
+            <div className="font-medium text-blue-800">Cannabinoids</div>
+            <div className="text-sm text-blue-600">THC%, CBD%, etc.</div>
+          </div>
+          <div className="text-center">
+            <div className="font-medium text-blue-800">Terpenes</div>
+            <div className="text-sm text-blue-600">Flavor profiles</div>
+          </div>
+        </div>
+      </div>
     </div>
-  );
+  )
 }
