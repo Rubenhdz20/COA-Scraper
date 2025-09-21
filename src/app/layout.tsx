@@ -1,3 +1,4 @@
+// src/app/layout.tsx
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import Link from 'next/link'
@@ -24,22 +25,22 @@ export default function RootLayout({
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="flex justify-between items-center h-16">
                 <div className="flex items-center">
-                  <h1 className="text-xl font-semibold text-gray-900">
-                    COA Scraper
-                  </h1>
-                  <span className="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-                    Beta
-                  </span>
-                </div>
-                <nav>
-                  <Link href="/" className="text-gray-600 hover:text-gray-900">
-                    Upload
-                  </Link>
-                  <a href="/history" className="text-gray-600 hover:text-gray-900">
-                    History
-                  </a>
-                </nav>
+                <h1 className="text-xl font-semibold text-gray-900">
+                  COA Scraper
+                </h1>
+                <span className="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
+                  Beta
+                </span>
               </div>
+              <div className="flex space-x-4">
+                <Link href="/" className="text-gray-600 hover:text-gray-900 transition-colors">
+                  Upload
+                </Link>
+                <a href="/history" className="text-gray-600 hover:text-gray-900 transition-colors">
+                  History
+                </a>
+              </div>
+            </div>
             </div>
           </header>
 

@@ -9,11 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@mistralai/mistralai": "^1.10.0",
     "@prisma/client": "^6.16.2",
     "@types/multer": "^2.0.0",
     "formidable": "^3.5.4",
     "multer": "^2.0.2",
     "next": "15.5.3",
+    "pdf-parse": "^1.1.1",
     "prisma": "^6.16.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -23,6 +25,7 @@
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.17",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

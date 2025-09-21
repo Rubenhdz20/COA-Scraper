@@ -53,14 +53,33 @@ export default function HomePage() {
           } : f)
         )
 
-        // TODO: Start OCR processing here
-        // For now, simulate processing
-        await new Promise(resolve => setTimeout(resolve, 2000))
+        // Trigger OCR processing
+        const { triggerProcessing } = await import('@/lib/processingQueue')
+        const processingResult = await triggerProcessing(result.data.id)
 
-        // Mark as completed (temporary - will be replaced with real extraction)
-        setUploadedFiles(prev =>
-          prev.map(f => f.id === result.data!.id ? { ...f, status: 'completed' } : f)
-        )
+        if (processingResult.success) {
+          // Start polling for processing status
+          const { pollProcessingStatus } = await import('@/lib/processingQueue')
+          
+          pollProcessingStatus(
+            result.data.id,
+            (status, data) => {
+              setUploadedFiles(prev =>
+                prev.map(f => f.id === result.data!.id ? { 
+                  ...f, 
+                  status: status as UploadedFile['status']
+                } : f)
+              )
+
+              if (status === 'completed' || status === 'failed') {
+                setIsProcessing(false)
+              }
+            }
+          )
+        } else {
+          throw new Error(processingResult.message || 'Processing failed')
+        }
+
       } else {
         throw new Error(result.error || 'Upload failed')
       }
@@ -70,7 +89,6 @@ export default function HomePage() {
       setUploadedFiles(prev =>
         prev.map(f => f.id === fileId ? { ...f, status: 'failed' } : f)
       )
-    } finally {
       setIsProcessing(false)
     }
   }
@@ -79,14 +97,43 @@ export default function HomePage() {
     setUploadedFiles(prev => prev.filter(f => f.id !== fileId))
   }
 
-  const handleRetryFile = (fileId: string) => {
-    // Find the file and re-upload it
+  const handleRetryFile = async (fileId: string) => {
+    // Find the file and re-trigger processing
     const file = uploadedFiles.find(f => f.id === fileId)
     if (file) {
-      // Remove the failed file
-      setUploadedFiles(prev => prev.filter(f => f.id !== fileId))
-      // TODO: Re-trigger upload with original file
-      console.log('Retry upload for:', file.name)
+      // Update status to processing
+      setUploadedFiles(prev =>
+        prev.map(f => f.id === fileId ? { ...f, status: 'processing' } : f)
+      )
+
+      try {
+        const { triggerProcessing } = await import('@/lib/processingQueue')
+        const processingResult = await triggerProcessing(fileId)
+
+        if (processingResult.success) {
+          // Start polling again
+          const { pollProcessingStatus } = await import('@/lib/processingQueue')
+          
+          pollProcessingStatus(
+            fileId,
+            (status, data) => {
+              setUploadedFiles(prev =>
+                prev.map(f => f.id === fileId ? { 
+                  ...f, 
+                  status: status as UploadedFile['status']
+                } : f)
+              )
+            }
+          )
+        } else {
+          throw new Error(processingResult.message || 'Retry failed')
+        }
+      } catch (error) {
+        console.error('Retry failed:', error)
+        setUploadedFiles(prev =>
+          prev.map(f => f.id === fileId ? { ...f, status: 'failed' } : f)
+        )
+      }
     }
   }
 
