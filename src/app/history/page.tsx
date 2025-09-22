@@ -4,7 +4,6 @@ import React, { useState, useEffect } from 'react'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { DocumentStats } from '@/components/coa/DocumentStats'
-import { deleteDocument } from '@/lib/fileUpload'
 
 interface Document {
   id: string
@@ -43,6 +42,7 @@ export default function HistoryPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [statusFilter, setStatusFilter] = useState<string>('')
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
 
   const fetchDocuments = async (page: number = 1, status: string = '') => {
     try {
@@ -63,6 +63,7 @@ export default function HistoryPage() {
         setDocuments(data.data.documents)
         setCurrentPage(data.data.pagination.currentPage)
         setTotalPages(data.data.pagination.totalPages)
+        setError(null)
       } else {
         setError(data.error || 'Failed to fetch documents')
       }
@@ -83,13 +84,34 @@ export default function HistoryPage() {
       return
     }
 
+    // Add to deleting set to show loading state
+    setDeletingIds(prev => new Set(prev).add(documentId))
+
     try {
-      await deleteDocument(documentId)
-      // Refresh the list
-      fetchDocuments(currentPage, statusFilter)
+      const response = await fetch(`/api/documents/${documentId}`, {
+        method: 'DELETE',
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        // Remove from documents list
+        setDocuments(prev => prev.filter(doc => doc.id !== documentId))
+        console.log('Document deleted successfully')
+      } else {
+        console.error('Delete failed:', result.error)
+        alert(result.error || 'Failed to delete document')
+      }
     } catch (error) {
       console.error('Delete failed:', error)
       alert('Failed to delete document')
+    } finally {
+      // Remove from deleting set
+      setDeletingIds(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(documentId)
+        return newSet
+      })
     }
   }
 
@@ -143,7 +165,7 @@ export default function HistoryPage() {
 
       {/* Filters */}
       <Card>
-        <div className="flex flex-wrap gap-4 items-center">
+        <div className="flex flex-wrap gap-4 items-center p-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Filter by Status
@@ -295,9 +317,10 @@ export default function HistoryPage() {
                           size="sm"
                           variant="outline"
                           onClick={() => handleDeleteDocument(doc.id)}
+                          disabled={deletingIds.has(doc.id)}
                           className="text-red-600 hover:text-red-800"
                         >
-                          Delete
+                          {deletingIds.has(doc.id) ? 'Deleting...' : 'Delete'}
                         </Button>
                       </div>
                     </td>

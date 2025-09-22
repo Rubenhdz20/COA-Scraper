@@ -8,28 +8,29 @@ datasource db {
 }
 
 model CoaDocument {
-  id              String   @id @default(cuid())
-  filename        String
-  originalName    String
-  fileSize        Int
-  uploadDate      DateTime @default(now())
-  processingStatus String  @default("pending")
+  id               String   @id @default(cuid())
+  originalName     String
+  filePath         String   @default("")  // Add default value
+  fileSize         Int
+  uploadDate       DateTime @default(now())
+  processingStatus String   @default("pending")
   
-  batchId         String?
-  strainName      String?
-  thcPercentage   Float?
-  cbdPercentage   Float?
+  // OCR Results
+  rawText          String?
+  ocrProvider      String?
+  confidence       Int?
+  
+  // Extracted Data
+  batchId          String?
+  strainName       String?
+  category         String?   // NEW FIELD
+  subCategory      String?   // NEW FIELD
+  thcPercentage    Float?
+  cbdPercentage    Float?
   totalCannabinoids Float?
-  labName         String?
-  testDate        String?
-  
-  rawText         String?
-  ocrProvider     String?
-  confidence      Float?
-  terpenes        String?
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  labName          String?
+  testDate         DateTime?
+  terpenes         String?   // JSON string
   
   @@map("coa_documents")
 }

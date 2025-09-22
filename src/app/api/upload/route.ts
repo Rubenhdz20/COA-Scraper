@@ -1,3 +1,4 @@
+
 import { NextRequest, NextResponse } from 'next/server'
 import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -45,32 +46,35 @@ export async function POST(request: NextRequest) {
     const randomString = Math.random().toString(36).substring(2, 15)
     const fileExtension = path.extname(file.name)
     const uniqueFilename = `${timestamp}-${randomString}${fileExtension}`
-    const filePath = path.join(uploadsDir, uniqueFilename)
+    const fullFilePath = path.join(uploadsDir, uniqueFilename)
 
     // Convert file to buffer and save
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
-    await writeFile(filePath, buffer)
+    await writeFile(fullFilePath, buffer)
 
-    // Save file metadata to database
+    // Save file metadata to database - FIXED: Include filePath
     const document = await prisma.coaDocument.create({
       data: {
-        filename: uniqueFilename,
         originalName: file.name,
+        filePath: fullFilePath,        // ADD: Full file path
         fileSize: file.size,
         processingStatus: 'pending'
       }
     })
+
+    console.log('Document created with ID:', document.id)
 
     return NextResponse.json({
       success: true,
       message: 'File uploaded successfully',
       data: {
         id: document.id,
-        filename: document.filename,
         originalName: document.originalName,
+        filePath: document.filePath,
         fileSize: document.fileSize,
-        uploadedAt: document.uploadDate
+        uploadedAt: document.uploadDate,
+        processingStatus: document.processingStatus
       }
     })
 

@@ -4,51 +4,46 @@ import React, { useState, useEffect } from 'react'
 import { Card } from '@/components/ui/Card'
 
 interface StatsData {
-  totalDocuments: number
-  completedDocuments: number
-  processingDocuments: number
-  failedDocuments: number
+  total: number
+  completed: number
+  processing: number
+  pending: number
+  failed: number
+}
+
+interface StatsResponse {
+  success: boolean
+  data: StatsData
+  error?: string
 }
 
 export const DocumentStats: React.FC = () => {
   const [stats, setStats] = useState<StatsData>({
-    totalDocuments: 0,
-    completedDocuments: 0,
-    processingDocuments: 0,
-    failedDocuments: 0
+    total: 0,
+    completed: 0,
+    processing: 0,
+    pending: 0,
+    failed: 0
   })
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        // Fetch documents with different statuses to calculate stats
-        const [completed, processing, failed] = await Promise.all([
-          fetch('/api/documents?status=completed'),
-          fetch('/api/documents?status=processing'),
-          fetch('/api/documents?status=failed')
-        ])
+        setLoading(true)
+        const response = await fetch('/api/documents/stats')
+        const data: StatsResponse = await response.json()
 
-        const [completedData, processingData, failedData] = await Promise.all([
-          completed.json(),
-          processing.json(),
-          failed.json()
-        ])
-
-        if (completedData.success && processingData.success && failedData.success) {
-          const completedCount = completedData.data?.pagination?.totalCount || 0
-          const processingCount = processingData.data?.pagination?.totalCount || 0
-          const failedCount = failedData.data?.pagination?.totalCount || 0
-
-          setStats({
-            totalDocuments: completedCount + processingCount + failedCount,
-            completedDocuments: completedCount,
-            processingDocuments: processingCount,
-            failedDocuments: failedCount
-          })
+        if (data.success) {
+          setStats(data.data)
+          setError(null)
+        } else {
+          setError(data.error || 'Failed to fetch stats')
         }
-      } catch (error) {
-        console.error('Error fetching stats:', error)
+      } catch (err) {
+        console.error('Error fetching stats:', err)
+        setError('Network error while fetching stats')
       } finally {
         setLoading(false)
       }
@@ -69,28 +64,36 @@ export const DocumentStats: React.FC = () => {
     )
   }
 
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-md p-4">
+        <p className="text-red-700">Error loading stats: {error}</p>
+      </div>
+    )
+  }
+
   const statCards = [
     {
       title: 'Total Documents',
-      value: stats.totalDocuments,
+      value: stats.total,
       color: 'text-blue-600',
       bgColor: 'bg-blue-50'
     },
     {
       title: 'Completed',
-      value: stats.completedDocuments,
+      value: stats.completed,
       color: 'text-green-600',
       bgColor: 'bg-green-50'
     },
     {
       title: 'Processing',
-      value: stats.processingDocuments,
+      value: stats.processing + stats.pending, // Combine processing and pending
       color: 'text-yellow-600',
       bgColor: 'bg-yellow-50'
     },
     {
       title: 'Failed',
-      value: stats.failedDocuments,
+      value: stats.failed,
       color: 'text-red-600',
       bgColor: 'bg-red-50'
     }
