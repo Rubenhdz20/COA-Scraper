@@ -1,7 +1,10 @@
+// src/app/results/[id]/page.tsx
 'use client'
 
 import React, { useState, useEffect } from 'react'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
+import { CopyAllData } from '@/components/ui/CopyableField'
+import { exportToCSV } from '@/utils/csvExport'
 
 interface TerpeneData {
   name: string
@@ -33,7 +36,6 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
   const [documentId, setDocumentId] = useState<string>('')
 
   useEffect(() => {
-    // Unwrap the params Promise
     params.then(({ id }) => {
       setDocumentId(id)
       
@@ -51,6 +53,26 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
         })
     })
   }, [params])
+
+  const handleCSVExport = () => {
+    if (!document) return
+    
+    exportToCSV({
+      originalName: document.originalName,
+      uploadDate: document.uploadDate,
+      batchId: document.batchId,
+      strainName: document.strainName,
+      category: document.category,
+      subCategory: document.subCategory,
+      thcPercentage: document.thcPercentage,
+      cbdPercentage: document.cbdPercentage,
+      totalCannabinoids: document.totalCannabinoids,
+      labName: document.labName,
+      testDate: document.testDate,
+      terpenes: document.terpenes,
+      confidence: document.confidence
+    })
+  }
 
   if (loading) {
     return (
@@ -81,19 +103,45 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
     <div className="max-w-4xl mx-auto p-8 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-gray-900">COA Extraction Results</h1>
-        {document.confidence && (
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600">Confidence:</span>
-            <span className={`px-2 py-1 rounded text-sm font-medium ${
-              document.confidence >= 80 ? 'bg-green-100 text-green-800' :
-              document.confidence >= 60 ? 'bg-yellow-100 text-yellow-800' :
-              'bg-red-100 text-red-800'
-            }`}>
-              {document.confidence}%
-            </span>
-          </div>
-        )}
+        <div className="flex items-center space-x-4">
+          {document.confidence && (
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-gray-600">Confidence:</span>
+              <span className={`px-2 py-1 rounded text-sm font-medium ${
+                document.confidence >= 80 ? 'bg-green-100 text-green-800' :
+                document.confidence >= 60 ? 'bg-yellow-100 text-yellow-800' :
+                'bg-red-100 text-red-800'
+              }`}>
+                {document.confidence}%
+              </span>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Export Actions */}
+      <Card>
+        <div className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 mb-1">Export Data</h3>
+              <p className="text-sm text-gray-600">Download or copy the extracted information</p>
+            </div>
+            <div className="flex space-x-3">
+              <CopyAllData data={document} />
+              <button
+                onClick={handleCSVExport}
+                className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Download CSV</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Card>
 
       {/* Document Information */}
       <Card>
@@ -101,7 +149,7 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
           <CardTitle>Document Information</CardTitle>
         </CardHeader>
         <div className="p-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <span className="text-gray-600">File:</span>
               <p className="font-medium">{document.originalName}</p>
@@ -137,7 +185,7 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
             <CardTitle>Lab Information</CardTitle>
           </CardHeader>
           <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {document.labName && (
                 <div>
                   <span className="text-gray-600">Lab:</span>
@@ -161,14 +209,14 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
           <CardTitle>Product Information</CardTitle>
         </CardHeader>
         <div className="p-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
               <span className="text-gray-600">Batch ID:</span>
-              <p className="font-medium">{document.batchId || 'Not found'}</p>
+              <p className="font-medium">{document.batchId || 'N/A'}</p>
             </div>
             <div>
               <span className="text-gray-600">Strain:</span>
-              <p className="font-medium">{document.strainName || 'Not found'}</p>
+              <p className="font-medium">{document.strainName || 'N/A'}</p>
             </div>
             {document.category && (
               <div>
@@ -222,7 +270,7 @@ export default function ResultsPage({ params }: { params: Promise<{ id: string }
             <CardTitle>Terpene Profile</CardTitle>
           </CardHeader>
           <div className="p-6">
-            <div className="space-y-3">
+            <div className="space-y-4">
               {document.terpenes.map((terpene, index) => (
                 <div key={index} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-b-0">
                   <span className="font-medium">{terpene.name}</span>
