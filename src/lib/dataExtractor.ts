@@ -1,346 +1,192 @@
 // src/lib/dataExtractor.ts
-
-// Define types inline instead of importing
-interface Terpene {
-  name: string;
-  percentage: number;
+interface ExtractedData {
+  batchId?: string
+  strainName?: string
+  category?: string
+  subCategory?: string
+  thcPercentage?: number
+  cbdPercentage?: number
+  totalCannabinoids?: number
+  labName?: string
+  testDate?: string
+  terpenes?: Array<{ name: string; percentage: number }>
+  confidence: number
 }
 
-interface ExtractedCOAData {
-  batchId: string | null;
-  strainName: string | null;
-  thcPercentage: number | null;
-  cbdPercentage: number | null;
-  terpenes: Terpene[];
-  totalCannabinoids: number | null;
-  labName: string | null;
-  testDate: string | null;
+interface MistralExtractionResponse {
+  choices: Array<{
+    message: {
+      content: string
+    }
+  }>
 }
 
-interface ValidationResult {
-  isValid: boolean;
-  issues: string[];
-  confidence: number;
+export async function extractDataFromOCRText(ocrText: string): Promise<ExtractedData> {
+  try {
+    console.log('Starting AI data extraction from OCR text')
+    console.log('OCR text length:', ocrText.length)
+
+    const apiKey = process.env.MISTRAL_API_KEY
+    if (!apiKey) {
+      throw new Error('MISTRAL_API_KEY environment variable is not set')
+    }
+
+    // Create a detailed prompt for cannabis data extraction
+    const extractionPrompt = `
+You are an expert at analyzing Certificate of Analysis (COA) documents for cannabis products. Extract the following information from this OCR text and return it as valid JSON.
+
+IMPORTANT: Look carefully for numerical values, percentages, and specific cannabis terminology.
+
+Extract these fields:
+- batchId: The batch/lot number (often starts with letters/numbers like "EVM0581", "1A4", etc.)
+- strainName: The cannabis strain name (like "Red Runtz", "Blue Dream", etc.)
+- category: Product category (Flower, Concentrate, Edible, Vape, etc.)
+- subCategory: More specific type (Cartridge, Live Resin, Gummies, etc.)
+- thcPercentage: Look for "THC", "TOTAL THC", "Δ9-THC" followed by percentage (e.g., "27.1%", "90.51%")
+- cbdPercentage: Look for "CBD", "TOTAL CBD" followed by percentage 
+- totalCannabinoids: Look for "Total Cannabinoids", "Sum of Cannabinoids" followed by percentage
+- labName: Testing laboratory name (like "2 River Labs", "SC Labs", etc.)
+- testDate: Test date in any format - convert to ISO format
+- terpenes: Array of {name: string, percentage: number} - look for terpene names like "β-Myrcene", "Limonene", "Pinene" with their percentages
+
+EXTRACTION TIPS:
+- Look for tables with cannabinoid results
+- THC percentages are often the highest numbers (15-35% for flower, 70-95% for concentrates)
+- CBD is usually much lower (0.01-20%)
+- Terpene percentages are typically 0.1-3%
+- Pay attention to decimal numbers followed by % symbols
+- Sometimes values are listed as "mg/g" - convert to percentage if needed
+
+Return ONLY valid JSON in this exact format:
+{
+  "batchId": "string or null",
+  "strainName": "string or null", 
+  "category": "string or null",
+  "subCategory": "string or null",
+  "thcPercentage": number or null,
+  "cbdPercentage": number or null,
+  "totalCannabinoids": number or null,
+  "labName": "string or null",
+  "testDate": "ISO date string or null",
+  "terpenes": [{"name": "string", "percentage": number}] or null
 }
 
-export function extractCOAData(ocrText: string): ExtractedCOAData {
-  const data: ExtractedCOAData = {
-    batchId: null,
-    strainName: null,
-    thcPercentage: null,
-    cbdPercentage: null,
-    terpenes: [],
-    totalCannabinoids: null,
-    labName: null,
-    testDate: null
-  }
+OCR Text to analyze:
+${ocrText}
+`
 
-  // Clean up the text - normalize whitespace and remove extra characters
-  const cleanText = ocrText
-    .replace(/\s+/g, ' ')
-    .replace(/[^\w\s\.\-\%\(\)\|\:\;\,]/g, ' ')
-    .trim()
+    // Call Mistral API for data extraction
+    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'mistral-large-latest',
+        messages: [
+          {
+            role: 'user',
+            content: extractionPrompt
+          }
+        ],
+        max_tokens: 2000,
+        temperature: 0.1, // Low temperature for consistent extraction
+        response_format: { type: 'json_object' }
+      })
+    })
 
-  // BATCH ID EXTRACTION
-  const batchPatterns = [
-    /batch\s*id[:\s]*([A-Z0-9\-#]{6,})/i,
-    /metrc\s*batch[:\s]*([A-Z0-9\-#]{6,})/i,
-    /batch[:\s]*([A-Z0-9\-#]{6,})/i,
-    /#([A-Z0-9]{10,})/i, // Pattern like #1A4090001234567
-    /batch[:\s]*([A-Z]{2,}\d{3,})/i, // Pattern like EVM0581
-    /metrc\s*source\s*uid[:\s]*([A-Z0-9]{10,})/i
-  ]
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('Mistral extraction API error:', response.status, errorText)
+      throw new Error(`Mistral extraction API error: ${response.status}`)
+    }
 
-  for (const pattern of batchPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      data.batchId = match[1].replace(/^#+/, '') // Remove leading #
-      break
+    const data: MistralExtractionResponse = await response.json()
+    
+    if (!data.choices || data.choices.length === 0) {
+      throw new Error('No extraction result returned from Mistral API')
+    }
+
+    const extractionResult = data.choices[0].message.content
+    console.log('Raw extraction result:', extractionResult)
+
+    // Parse the JSON response
+    let parsedData: any
+    try {
+      parsedData = JSON.parse(extractionResult)
+    } catch (parseError) {
+      console.error('Failed to parse extraction JSON:', parseError)
+      console.error('Raw result:', extractionResult)
+      throw new Error('Invalid JSON returned from extraction API')
+    }
+
+    // Calculate confidence based on how much data was extracted
+    const confidence = calculateExtractionConfidence(parsedData, ocrText)
+
+    const result: ExtractedData = {
+      batchId: parsedData.batchId || undefined,
+      strainName: parsedData.strainName || undefined,
+      category: parsedData.category || undefined,
+      subCategory: parsedData.subCategory || undefined,
+      thcPercentage: parsedData.thcPercentage || undefined,
+      cbdPercentage: parsedData.cbdPercentage || undefined,
+      totalCannabinoids: parsedData.totalCannabinoids || undefined,
+      labName: parsedData.labName || undefined,
+      testDate: parsedData.testDate || undefined,
+      terpenes: parsedData.terpenes || undefined,
+      confidence: confidence
+    }
+
+    console.log('Extraction completed successfully')
+    console.log('Extracted data:', JSON.stringify(result, null, 2))
+
+    return result
+
+  } catch (error) {
+    console.error('Error in AI data extraction:', error)
+    
+    // Return a low-confidence result rather than failing completely
+    return {
+      confidence: 10
     }
   }
+}
 
-  // STRAIN NAME EXTRACTION
-  const strainPatterns = [
-    /strain[:\s]*([^|\n\r(]+?)(?:\s*\[|\s*\(|$)/i,
-    /sample[:\s]*([^(\n\r]+?)(?:\s*\(|$)/i, // "RED RUNTZ (FLOWER)"
-    /product[:\s]*([^|\n\r]+?)(?:\s*\||$)/i,
-    // For formats like "1g Cart | Cereal Milk [H]"
-    /cart\s*\|\s*([^[\n\r]+?)(?:\s*\[|$)/i,
-    // Match strain names in headers - common cannabis strain patterns
-    /\b(OG\s+[A-Z][a-z]+|[A-Z][a-z]+\s+(?:Kush|Dream|Haze|Diesel|Cheese|Cookies))\b/i,
-    // General pattern for strain-like names
-    /\b([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s*\[|\s*\(|\s*$)/
+function calculateExtractionConfidence(extractedData: any, originalText: string): number {
+  let confidence = 20 // Base confidence for completing the extraction
+  
+  // Add confidence for each successfully extracted field
+  const fields = [
+    'batchId', 'strainName', 'category', 'thcPercentage', 
+    'cbdPercentage', 'labName', 'testDate'
   ]
-
-  for (const pattern of strainPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      let strainName = match[1].trim()
-      // Clean up common artifacts
-      strainName = strainName.replace(/\s+/g, ' ')
-      strainName = strainName.replace(/^(sample|strain|product)[:]*\s*/i, '')
-      
-      if (strainName.length > 3 && strainName.length < 50) {
-        data.strainName = strainName
-        break
-      }
-    }
-  }
-
-  // THC PERCENTAGE EXTRACTION
-  const thcPatterns = [
-    /total\s+thc[:\s]*(\d+\.?\d*)\s*%/i,
-    /thc\s*%[:\s]*(\d+\.?\d*)/i,
-    /thc[:\s]*(\d+\.?\d*)\s*%/i,
-    // For high concentration products like vapes
-    /(\d{2,3}\.\d{1,2})\s*%.*thc/i,
-    // Table format: THC followed by percentage
-    /thc\s+(\d+\.?\d*)/i
-  ]
-
-  for (const pattern of thcPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      const percentage = parseFloat(match[1])
-      if (percentage >= 0 && percentage <= 100) {
-        data.thcPercentage = percentage
-        break
-      }
-    }
-  }
-
-  // CBD PERCENTAGE EXTRACTION
-  const cbdPatterns = [
-    /total\s+cbd[:\s]*(\d+\.?\d*)\s*%/i,
-    /cbd\s*%[:\s]*(\d+\.?\d*)/i,
-    /cbd[:\s]*(\d+\.?\d*)\s*%/i,
-    /cbd\s+(\d+\.?\d*)/i
-  ]
-
-  for (const pattern of cbdPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      const percentage = parseFloat(match[1])
-      if (percentage >= 0 && percentage <= 100) {
-        data.cbdPercentage = percentage
-        break
-      }
-    }
-  }
-
-  // TERPENES EXTRACTION
-  const terpeneNames = [
-    'myrcene', 'caryophyllene', 'limonene', 'pinene', 'linalool', 'humulene',
-    'terpinolene', 'ocimene', 'bisabolol', 'nerolidol', 'camphene', 'valencene',
-    'borneol', 'fenchol', 'terpineol', 'guaiol', 'eucalyptol', 'geraniol'
-  ]
-
-  const terpenePatterns = [
-    // β-Caryophyllene - 1.8%
-    /(β|beta|α|alpha|δ|delta|γ|gamma)-?([a-z]+(?:ene|ol|ine|ene))[:\s\-]*(\d+\.?\d*)\s*%/gi,
-    // D-Limonene 0.450 %
-    /([a-z]-?[a-z]+(?:ene|ol|ine))[:\s]*(\d+\.?\d*)\s*%/gi,
-    // Standard format in tables
-    /\b((?:beta|alpha|gamma|delta)-?[a-z]+(?:ene|ol|ine))\s+(\d+\.?\d*)/gi
-  ]
-
-  const foundTerpenes = new Set<string>()
-
-  terpenePatterns.forEach(pattern => {
-    let match
-    while ((match = pattern.exec(cleanText)) !== null) {
-      let name: string
-      let percentage: number
-
-      if (match.length === 4) {
-        // Pattern with Greek letters
-        name = `${match[1]}-${match[2]}`
-        percentage = parseFloat(match[3])
-      } else {
-        name = match[1]
-        percentage = parseFloat(match[2])
-      }
-
-      // Validate terpene
-      const normalizedName = name.toLowerCase().replace(/[^a-z]/g, '')
-      const isValidTerpene = terpeneNames.some(validName => 
-        normalizedName.includes(validName) || validName.includes(normalizedName)
-      )
-
-      if (isValidTerpene && percentage > 0 && percentage < 50) {
-        const formattedName = formatTerpeneName(name)
-        const key = `${formattedName}-${percentage}`
-        
-        if (!foundTerpenes.has(key)) {
-          foundTerpenes.add(key)
-          data.terpenes.push({
-            name: formattedName,
-            percentage: percentage
-          })
-        }
-      }
+  
+  fields.forEach(field => {
+    if (extractedData[field] && extractedData[field] !== null) {
+      confidence += 8
     }
   })
-
-  // Sort terpenes by percentage descending
-  data.terpenes.sort((a, b) => b.percentage - a.percentage)
-
-  // TOTAL CANNABINOIDS
-  const cannabinoidPatterns = [
-    /total\s+cannabinoids[:\s]*(\d+\.?\d*)\s*%/i,
-    /cannabinoids[:\s]*(\d+\.?\d*)\s*%/i,
-    /sum\s+of\s+cannabinoids[:\s]*(\d+\.?\d*)\s*%/i
-  ]
-
-  for (const pattern of cannabinoidPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      const percentage = parseFloat(match[1])
-      if (percentage >= 0 && percentage <= 100) {
-        data.totalCannabinoids = percentage
-        break
-      }
-    }
-  }
-
-  // LAB NAME EXTRACTION
-  const labPatterns = [
-    /(\d+\s*river\s*labs)/i,
-    /(.*labs.*inc)/i,
-    /lab[:\s]*([^,\n]+)/i,
-    /(cannasafe|sc\s*labs|steep\s*hill)/i
-  ]
-
-  for (const pattern of labPatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      data.labName = match[1].trim()
-      break
-    }
-  }
-
-  // TEST DATE EXTRACTION
-  const datePatterns = [
-    /produced[:\s]*([A-Z]{3}\s+\d{1,2},?\s+\d{4})/i,
-    /(\d{1,2}\/\d{1,2}\/\d{4})/,
-    /([A-Z]{3}\s+\d{1,2},?\s+\d{4})/i,
-    /(\d{4}-\d{2}-\d{2})/
-  ]
-
-  for (const pattern of datePatterns) {
-    const match = cleanText.match(pattern)
-    if (match) {
-      data.testDate = match[1]
-      break
-    }
-  }
-
-  return data
-}
-
-// Helper function to format terpene names consistently
-function formatTerpeneName(name: string): string {
-  const formatted = name.toLowerCase().replace(/[^a-z\-]/g, '')
   
-  // Common terpene name mappings
-  const terpeneMap: Record<string, string> = {
-    'caryophyllene': 'β-Caryophyllene',
-    'beta-caryophyllene': 'β-Caryophyllene',
-    'bcaryophyllene': 'β-Caryophyllene',
-    'limonene': 'D-Limonene',
-    'd-limonene': 'D-Limonene',
-    'myrcene': 'β-Myrcene',
-    'beta-myrcene': 'β-Myrcene',
-    'bmyrcene': 'β-Myrcene',
-    'humulene': 'α-Humulene',
-    'alpha-humulene': 'α-Humulene',
-    'ahumulene': 'α-Humulene',
-    'pinene': 'α-Pinene',
-    'alpha-pinene': 'α-Pinene',
-    'apinene': 'α-Pinene',
-    'linalool': 'Linalool',
-    'terpinolene': 'Terpinolene',
-    'nerolidol': 'Nerolidol',
-    'trans-nerolidol': 'Trans-Nerolidol',
-    'ocimene': 'Ocimene',
-    'bisabolol': 'α-Bisabolol',
-    'alpha-bisabolol': 'α-Bisabolol'
-  }
-
-  // Check for exact matches first
-  if (terpeneMap[formatted]) {
-    return terpeneMap[formatted]
-  }
-
-  // Check for partial matches
-  for (const [key, value] of Object.entries(terpeneMap)) {
-    if (formatted.includes(key.replace('-', ''))) {
-      return value
-    }
-  }
-
-  // If no match, return capitalized version
-  return name.split('-').map(part => 
-    part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
-  ).join('-')
-}
-
-// Validation function for extracted data
-export function validateExtractedData(data: ExtractedCOAData): ValidationResult {
-  const issues: string[] = []
-  let confidence = 100
-
-  // Check for required fields
-  if (!data.batchId) {
-    issues.push("Batch ID not found")
-    confidence -= 20
+  // Extra confidence for terpenes (complex extraction)
+  if (extractedData.terpenes && Array.isArray(extractedData.terpenes) && extractedData.terpenes.length > 0) {
+    confidence += 15
   }
   
-  if (!data.strainName) {
-    issues.push("Strain name not found")
-    confidence -= 15
+  // Validate that percentages are reasonable
+  if (extractedData.thcPercentage && extractedData.thcPercentage > 0 && extractedData.thcPercentage < 100) {
+    confidence += 5
   }
   
-  if (data.thcPercentage === null) {
-    issues.push("THC percentage not found")
-    confidence -= 25
+  if (extractedData.cbdPercentage && extractedData.cbdPercentage >= 0 && extractedData.cbdPercentage < 100) {
+    confidence += 5
   }
   
-  if (data.cbdPercentage === null) {
-    issues.push("CBD percentage not found")
-    confidence -= 10
-  }
-
-  // Validate ranges
-  if (data.thcPercentage !== null && (data.thcPercentage < 0 || data.thcPercentage > 100)) {
-    issues.push("THC percentage out of valid range (0-100%)")
-    confidence -= 30
+  // Check if extracted data makes sense in context
+  if (extractedData.strainName && originalText.toLowerCase().includes(extractedData.strainName.toLowerCase())) {
+    confidence += 10
   }
   
-  if (data.cbdPercentage !== null && (data.cbdPercentage < 0 || data.cbdPercentage > 100)) {
-    issues.push("CBD percentage out of valid range (0-100%)")
-    confidence -= 30
-  }
-
-  // Check for suspicious values
-  if (data.thcPercentage !== null && data.thcPercentage > 50) {
-    issues.push("Unusually high THC percentage detected")
-    confidence -= 10
-  }
-
-  if (data.terpenes.length === 0) {
-    issues.push("No terpenes extracted")
-    confidence -= 5
-  }
-
-  // Boost confidence for additional data
-  if (data.labName) confidence += 5
-  if (data.testDate) confidence += 5
-  if (data.totalCannabinoids) confidence += 5
-
-  return {
-    isValid: issues.length === 0,
-    issues,
-    confidence: Math.max(Math.min(confidence, 99), 10)
-  }
+  // Cap confidence at 95%
+  return Math.min(confidence, 95)
 }

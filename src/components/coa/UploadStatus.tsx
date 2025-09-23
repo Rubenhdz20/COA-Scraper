@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import { useRouter } from 'next/navigation'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 
@@ -24,6 +25,8 @@ export const UploadStatus: React.FC<UploadStatusProps> = ({
   onRemoveFile,
   onRetryFile
 }) => {
+  const router = useRouter()
+
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes'
     const k = 1024
@@ -88,6 +91,10 @@ export const UploadStatus: React.FC<UploadStatusProps> = ({
     }
   }
 
+  const handleViewResults = (fileId: string) => {
+    router.push(`/results/${fileId}`)
+  }
+
   if (files.length === 0) {
     return null
   }
@@ -98,7 +105,7 @@ export const UploadStatus: React.FC<UploadStatusProps> = ({
         <CardTitle>Upload Status</CardTitle>
       </CardHeader>
       
-      <div className="space-y-4">
+      <div className="space-y-4 p-4">
         {files.map((file) => (
           <div
             key={file.id}
@@ -163,7 +170,7 @@ export const UploadStatus: React.FC<UploadStatusProps> = ({
                   <Button
                     size="sm"
                     variant="primary"
-                    onClick={() => {/* Navigate to results */}}
+                    onClick={() => handleViewResults(file.id)}
                   >
                     View Results
                   </Button>
