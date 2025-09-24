@@ -25,6 +25,11 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
   try {
     console.log('Starting enhanced AI data extraction from OCR text')
     console.log('OCR text length:', ocrText.length)
+    
+    // ADD DEBUG LOGGING - This will help us see what text is being processed
+    console.log('=== OCR TEXT START ===')
+    console.log(ocrText.substring(0, 1000)) // First 1000 characters
+    console.log('=== OCR TEXT END ===')
 
     const apiKey = process.env.MISTRAL_API_KEY
     if (!apiKey) {
@@ -33,8 +38,8 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
 
     // Try multiple extraction strategies
     const strategies = [
+      { name: 'simplified-focused', prompt: createSimplifiedPrompt(ocrText) },
       { name: 'comprehensive', prompt: createComprehensivePrompt(ocrText) },
-      { name: 'table-focused', prompt: createTableFocusedPrompt(ocrText) },
       { name: 'regex-guided', prompt: createRegexGuidedPrompt(ocrText) }
     ]
 
@@ -51,6 +56,7 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
           bestResult = { ...result, extractionMethod: strategy.name }
           highestConfidence = result.confidence
           console.log(`Strategy ${strategy.name} achieved confidence: ${result.confidence}`)
+          console.log(`Strategy ${strategy.name} extracted THC: ${result.thcPercentage}, CBD: ${result.cbdPercentage}`)
         }
 
         // If we get high confidence, use it
@@ -76,6 +82,35 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
     console.error('Error in enhanced data extraction:', error)
     return { confidence: 10 }
   }
+}
+
+// NEW: Simplified prompt that focuses on the most important data
+function createSimplifiedPrompt(ocrText: string): string {
+  return `Extract cannabis lab data from this COA document. Focus on finding these exact values:
+
+1. THC percentage - look for patterns like:
+   - "Total THC: 27.14%"
+   - "THC 27.14%"
+   - Any number followed by % near "THC"
+
+2. CBD percentage - look for patterns like:
+   - "Total CBD: 0.05%"
+   - "CBD 0.05%"
+   - Any number followed by % near "CBD"
+
+3. Batch ID - look for alphanumeric codes after words like BATCH, LOT, METRC
+
+Return ONLY this JSON format:
+{
+  "thcPercentage": number_or_null,
+  "cbdPercentage": number_or_null,
+  "batchId": "string_or_null",
+  "strainName": "string_or_null",
+  "labName": "string_or_null"
+}
+
+OCR Text:
+${ocrText}`
 }
 
 function createComprehensivePrompt(ocrText: string): string {
@@ -122,44 +157,21 @@ function createComprehensivePrompt(ocrText: string): string {
   ${ocrText}`
 }
 
-function createTableFocusedPrompt(ocrText: string): string {
-  return `Focus ONLY on finding data in table structures. Look for:
-
-  CANNABINOID TABLES:
-  - Rows with "THC" and percentage columns
-  - "TOTAL THC" calculations
-  - "CBD" values (often very small like 0.05%)
-
-  TERPENE TABLES:
-  - Columns showing terpene names and percentages
-  - Look for "%" symbols in terpene sections
-
-  Extract the highest confidence numerical values you find in table formats.
-
-  Return ONLY JSON:
-  {
-    "thcPercentage": number or null,
-    "cbdPercentage": number or null,
-    "totalCannabinoids": number or null,
-    "terpenes": [{"name": "string", "percentage": number}] or null,
-    "batchId": "string or null",
-    "strainName": "string or null",
-    "labName": "string or null"
-  }
-
-  OCR Text:
-  ${ocrText}`
-}
-
 function createRegexGuidedPrompt(ocrText: string): string {
-  // Pre-process text to find likely candidates
-  const thcMatches = ocrText.match(/(?:TOTAL\s+)?THC[:\s]*(\d+\.?\d*)\s*%/gi)
+  // IMPROVED: More comprehensive regex patterns
+  const thcMatches = ocrText.match(/(?:TOTAL\s+)?(?:THC|Δ9-THC|Delta-9)[:\s]*(\d+\.?\d*)\s*%/gi)
   const cbdMatches = ocrText.match(/(?:TOTAL\s+)?CBD[:\s]*(\d+\.?\d*)\s*%/gi)
-  const batchMatches = ocrText.match(/(?:BATCH|LOT|METRC)[:\s\w]*([A-Z0-9]{6,})/gi)
+  const batchMatches = ocrText.match(/(?:BATCH|LOT|METRC)[:\s\w]*([A-Z0-9]{5,})/gi)
+  
+  // Also look for percentage values near THC/CBD words
+  const thcNearby = ocrText.match(/(\d+\.?\d*)\s*%[^%]*THC|THC[^%]*(\d+\.?\d*)\s*%/gi)
+  const cbdNearby = ocrText.match(/(\d+\.?\d*)\s*%[^%]*CBD|CBD[^%]*(\d+\.?\d*)\s*%/gi)
   
   return `I found potential matches in the text:
-  THC candidates: ${thcMatches?.join(', ') || 'none'}
-  CBD candidates: ${cbdMatches?.join(', ') || 'none'} 
+  THC direct matches: ${thcMatches?.join(', ') || 'none'}
+  THC nearby matches: ${thcNearby?.join(', ') || 'none'}
+  CBD direct matches: ${cbdMatches?.join(', ') || 'none'} 
+  CBD nearby matches: ${cbdNearby?.join(', ') || 'none'}
   Batch candidates: ${batchMatches?.join(', ') || 'none'}
 
   Please extract the most accurate values from these candidates and the full text.
@@ -195,11 +207,14 @@ async function callMistralExtraction(prompt: string, apiKey: string): Promise<Ex
     })
 
     if (!response.ok) {
+      console.error('Mistral API response not OK:', response.status, response.statusText)
       throw new Error(`Mistral API error: ${response.status}`)
     }
 
     const data: MistralExtractionResponse = await response.json()
     const extractionResult = data.choices[0].message.content
+    
+    console.log('Raw Mistral response:', extractionResult)
 
     const parsedData = JSON.parse(extractionResult)
     const confidence = calculateAdvancedConfidence(parsedData)
@@ -214,47 +229,69 @@ async function callMistralExtraction(prompt: string, apiKey: string): Promise<Ex
 
 function fallbackPatternMatching(ocrText: string): ExtractedData {
   console.log('Running fallback pattern matching')
+  console.log('OCR text sample for fallback:', ocrText.substring(0, 500))
   
   const result: ExtractedData = { confidence: 50 }
 
-  // THC Pattern Matching
+  // IMPROVED: More comprehensive THC Pattern Matching
   const thcPatterns = [
-    /TOTAL\s+THC[:\s]+(\d+\.?\d*)\s*%/i,
-    /THC[:\s]+(\d+\.?\d*)\s*%/i,
-    /(\d+\.?\d*)\s*%.*THC/i
+    /TOTAL\s+THC[:\s]*(\d+\.?\d*)\s*%/gi,
+    /THC[:\s]*(\d+\.?\d*)\s*%/gi,
+    /(\d+\.?\d*)\s*%[^%\n]*THC/gi,
+    /THC[^%\n]*(\d+\.?\d*)\s*%/gi,
+    /Δ9-THC[:\s]*(\d+\.?\d*)\s*%/gi,
+    /Delta-9-THC[:\s]*(\d+\.?\d*)\s*%/gi
   ]
 
+  console.log('Trying THC patterns...')
   for (const pattern of thcPatterns) {
-    const match = ocrText.match(pattern)
-    if (match) {
-      const value = parseFloat(match[1])
-      if (value > 0 && value < 100) {
-        result.thcPercentage = value
-        result.confidence += 20
-        break
+    const matches = [...ocrText.matchAll(pattern)]
+    console.log(`Pattern ${pattern} found matches:`, matches.map(m => m[0]))
+    
+    if (matches.length > 0) {
+      for (const match of matches) {
+        const value = parseFloat(match[1])
+        console.log(`Found THC value: ${value}`)
+        if (value > 0 && value < 100) {
+          result.thcPercentage = value
+          result.confidence += 20
+          console.log(`Set THC to ${value}`)
+          break
+        }
       }
+      if (result.thcPercentage) break
     }
   }
 
-  // CBD Pattern Matching
+  // IMPROVED: More comprehensive CBD Pattern Matching
   const cbdPatterns = [
-    /TOTAL\s+CBD[:\s]+(\d+\.?\d*)\s*%/i,
-    /CBD[:\s]+(\d+\.?\d*)\s*%/i
+    /TOTAL\s+CBD[:\s]*(\d+\.?\d*)\s*%/gi,
+    /CBD[:\s]*(\d+\.?\d*)\s*%/gi,
+    /(\d+\.?\d*)\s*%[^%\n]*CBD/gi,
+    /CBD[^%\n]*(\d+\.?\d*)\s*%/gi
   ]
 
+  console.log('Trying CBD patterns...')
   for (const pattern of cbdPatterns) {
-    const match = ocrText.match(pattern)
-    if (match) {
-      const value = parseFloat(match[1])
-      if (value >= 0 && value < 50) {
-        result.cbdPercentage = value
-        result.confidence += 15
-        break
+    const matches = [...ocrText.matchAll(pattern)]
+    console.log(`Pattern ${pattern} found matches:`, matches.map(m => m[0]))
+    
+    if (matches.length > 0) {
+      for (const match of matches) {
+        const value = parseFloat(match[1])
+        console.log(`Found CBD value: ${value}`)
+        if (value >= 0 && value < 50) {
+          result.cbdPercentage = value
+          result.confidence += 15
+          console.log(`Set CBD to ${value}`)
+          break
+        }
       }
+      if (result.cbdPercentage !== undefined) break
     }
   }
 
-  // Batch ID Pattern Matching
+  // Batch ID Pattern Matching (unchanged)
   const batchPatterns = [
     /BATCH[:\s]*ID[:\s]*([A-Z0-9]+)/i,
     /LOT[:\s]*([A-Z0-9]+)/i,
@@ -279,7 +316,7 @@ function fallbackPatternMatching(ocrText: string): ExtractedData {
     result.confidence += 10
   }
 
-  console.log('Fallback extraction result:', result)
+  console.log('Final fallback extraction result:', result)
   return result
 }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { processPDFWithMistral } from '@/lib/ocr/mistralOCR'
-import { extractDataFromOCRText } from '@/lib/dataExtractor'
+import { extractDataFromOCRText } from '@/lib/dataExtractor' // FIXED: Correct import path
 
 // GET handler - Check processing status (keep existing)
 export async function GET(
@@ -125,14 +125,20 @@ export async function POST(
 
       // STEP 3: Enhanced AI Data Extraction
       console.log('Step 3: Starting enhanced AI data extraction...')
+      console.log('About to call extractDataFromOCRText with text length:', ocrResult.extractedText.length)
+      
       const extractedData = await extractDataFromOCRText(ocrResult.extractedText)
       
       console.log('Data extraction completed')
       console.log('Extraction confidence:', extractedData.confidence)
+      console.log('Extraction method used:', extractedData.extractionMethod)
       console.log('Extracted data summary:', {
+        batchId: extractedData.batchId,
         strain: extractedData.strainName,
         thc: extractedData.thcPercentage,
         cbd: extractedData.cbdPercentage,
+        totalCannabinoids: extractedData.totalCannabinoids,
+        lab: extractedData.labName,
         terpenes: extractedData.terpenes?.length || 0
       })
 
@@ -145,6 +151,13 @@ export async function POST(
         extractedData.confidence,
         qualityReport.confidence
       )
+
+      console.log('Final confidence calculation:', {
+        ocrConfidence: ocrResult.confidence,
+        extractionConfidence: extractedData.confidence,
+        qualityConfidence: qualityReport.confidence,
+        finalConfidence: finalConfidence
+      })
 
       const updatedDocument = await prisma.coaDocument.update({
         where: { id: documentId },
