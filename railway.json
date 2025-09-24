@@ -1,5 +1,6 @@
 {
-  "build": {
-    "command": "prisma generate && prisma db push && npm run build"
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "startCommand": "prisma db push && npm start"
   }
 }
