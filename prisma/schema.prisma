@@ -20,7 +20,7 @@ model CoaDocument {
   ocrProvider      String?
   confidence       Int?
   
-  // Extracted Data
+  // Extracted Data 
   batchId          String?
   strainName       String?
   category         String?   // NEW FIELD
