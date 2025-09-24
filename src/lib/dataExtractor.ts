@@ -98,12 +98,18 @@ function createSimplifiedPrompt(ocrText: string): string {
    - "CBD 0.05%"
    - Any number followed by % near "CBD"
 
-3. Batch ID - look for alphanumeric codes after words like BATCH, LOT, METRC
+3. Total Cannabinoids percentage - look for patterns like:
+   - "Total Cannabinoids: 24.5%"
+   - "Total Active Cannabinoids: 24.5%"
+   - Any number followed by % near "Total Cannabinoids"
+
+4. Batch ID - look for alphanumeric codes after words like BATCH, LOT, METRC
 
 Return ONLY this JSON format:
 {
   "thcPercentage": number_or_null,
   "cbdPercentage": number_or_null,
+  "totalCannabinoids": number_or_null,
   "batchId": "string_or_null",
   "strainName": "string_or_null",
   "labName": "string_or_null"
@@ -288,6 +294,48 @@ function fallbackPatternMatching(ocrText: string): ExtractedData {
         }
       }
       if (result.cbdPercentage !== undefined) break
+    }
+  }
+
+  // NEW: Total Cannabinoids Pattern Matching
+  const totalCannabinoidPatterns = [
+    /TOTAL\s+CANNABINOIDS?[:\s]*(\d+\.?\d*)\s*%/gi,
+    /TOTAL\s+ACTIVE\s+CANNABINOIDS?[:\s]*(\d+\.?\d*)\s*%/gi,
+    /CANNABINOIDS?\s+TOTAL[:\s]*(\d+\.?\d*)\s*%/gi,
+    /TOTAL[:\s]*(\d+\.?\d*)\s*%[^%\n]*CANNABINOIDS?/gi,
+    /(\d+\.?\d*)\s*%[^%\n]*TOTAL[^%\n]*CANNABINOIDS?/gi
+  ]
+
+  console.log('Trying Total Cannabinoids patterns...')
+  for (const pattern of totalCannabinoidPatterns) {
+    const matches = [...ocrText.matchAll(pattern)]
+    console.log(`Pattern ${pattern} found matches:`, matches.map(m => m[0]))
+    
+    if (matches.length > 0) {
+      for (const match of matches) {
+        const value = parseFloat(match[1])
+        console.log(`Found Total Cannabinoids value: ${value}`)
+        if (value > 0 && value <= 100) {
+          result.totalCannabinoids = value
+          result.confidence += 15
+          console.log(`Set Total Cannabinoids to ${value}`)
+          break
+        }
+      }
+      if (result.totalCannabinoids) break
+    }
+  }
+
+  // If no Total Cannabinoids found but we have THC and/or CBD, calculate it
+  if (!result.totalCannabinoids && (result.thcPercentage || result.cbdPercentage)) {
+    const thc = result.thcPercentage || 0
+    const cbd = result.cbdPercentage || 0
+    const calculated = thc + cbd
+    
+    if (calculated > 0) {
+      result.totalCannabinoids = Math.round(calculated * 100) / 100 // Round to 2 decimal places
+      result.confidence += 5 // Small bonus for calculated value
+      console.log(`Calculated Total Cannabinoids as ${result.totalCannabinoids}% (THC: ${thc}% + CBD: ${cbd}%)`)
     }
   }
 
