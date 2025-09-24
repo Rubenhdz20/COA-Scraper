@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateOCRSetup } from '@/lib/ocr/testOCR'
 import { processDocumentOCR } from '@/lib/ocr/ocrService'
-import { extractCOAData } from '@/lib/dataExtractor'
+import { extractDataFromOCRText } from '@/lib/dataExtractor'
 import path from 'path'
 import fs from 'fs'
 
@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Test data extraction
-    const extractedData = extractCOAData(ocrResult.extractedText)
+    const extractedData = await extractDataFromOCRText(ocrResult.extractedText)
     
     // Generate test report
     const testReport = {
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
           strainName: !!extractedData.strainName,
           thcPercentage: extractedData.thcPercentage !== null,
           cbdPercentage: extractedData.cbdPercentage !== null,
-          terpenes: extractedData.terpenes.length > 0,
+          terpenes: Array.isArray(extractedData.terpenes) && extractedData.terpenes.length > 0,
           labName: !!extractedData.labName,
           testDate: !!extractedData.testDate
         },
