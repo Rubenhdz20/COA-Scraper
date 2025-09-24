@@ -1,4 +1,3 @@
-// src/app/api/process/[id]/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { processPDFWithMistral } from '@/lib/ocr/mistralOCR'
@@ -107,8 +106,25 @@ export async function POST(
       console.log('Extracted text length:', ocrResult.extractedText.length)
       console.log('OCR text preview:', ocrResult.extractedText.substring(0, 200) + '...')
 
-      // STEP 2: AI Data Extraction
-      console.log('Step 2: Starting AI data extraction...')
+      // STEP 2: Validate OCR Quality
+      console.log('Step 2: Validating OCR quality...')
+      const { validateOCRQuality, shouldProceedWithExtraction } = await import('@/lib/ocrValidator')
+      
+      const qualityReport = validateOCRQuality(ocrResult.extractedText)
+      console.log('OCR Quality Report:', {
+        quality: qualityReport.quality,
+        confidence: qualityReport.confidence,
+        issues: qualityReport.issues.length,
+        coaIndicators: qualityReport.coaIndicators
+      })
+
+      if (!shouldProceedWithExtraction(qualityReport)) {
+        console.warn('OCR quality too poor for reliable extraction')
+        // Continue anyway but with lower confidence
+      }
+
+      // STEP 3: Enhanced AI Data Extraction
+      console.log('Step 3: Starting enhanced AI data extraction...')
       const extractedData = await extractDataFromOCRText(ocrResult.extractedText)
       
       console.log('Data extraction completed')
@@ -120,15 +136,23 @@ export async function POST(
         terpenes: extractedData.terpenes?.length || 0
       })
 
-      // STEP 3: Save results to database
-      console.log('Step 3: Saving results to database...')
+      // STEP 4: Save results to database
+      console.log('Step 4: Saving results to database...')
+      
+      // Combine OCR and extraction confidence
+      const finalConfidence = Math.min(
+        ocrResult.confidence || 0, 
+        extractedData.confidence,
+        qualityReport.confidence
+      )
+
       const updatedDocument = await prisma.coaDocument.update({
         where: { id: documentId },
         data: {
           processingStatus: 'completed',
           rawText: ocrResult.extractedText,
           ocrProvider: ocrResult.provider,
-          confidence: Math.min(ocrResult.confidence || 0, extractedData.confidence), // Use lower confidence
+          confidence: finalConfidence,
           batchId: extractedData.batchId,
           strainName: extractedData.strainName,
           category: extractedData.category,

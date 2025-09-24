@@ -43,5 +43,8 @@ next-env.d.ts
 /src/generated/prisma
 
 # Uploads directory
-uploads/
 *.pdf
+.env.local
+.env
+uploads/
+prisma/dev.db
