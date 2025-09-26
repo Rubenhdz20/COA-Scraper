@@ -14,11 +14,7 @@ interface ExtractedData {
 }
 
 interface MistralExtractionResponse {
-  choices: Array<{
-    message: {
-      content: string
-    }
-  }>
+  choices: Array<{ message: { content: string } }>
 }
 
 interface ExtractionStrategy {
@@ -26,59 +22,57 @@ interface ExtractionStrategy {
   extract: (text: string) => ExtractedData
 }
 
-// Core extraction engine with configurable strategies
 export async function extractDataFromOCRText(ocrText: string): Promise<ExtractedData> {
   try {
     console.log('Starting COA data extraction')
     console.log('Text length:', ocrText.length)
 
-    // Determine lab type for strategy selection
     const labType = detectLabType(ocrText)
     console.log('Detected lab type:', labType)
 
-    // Get appropriate extraction strategies
     const strategies = getExtractionStrategies(labType)
     console.log('Using strategies:', strategies.map(s => s.name))
 
-    // Execute strategies in order
     const results: ExtractedData[] = []
     for (const strategy of strategies) {
       console.log(`\nExecuting strategy: ${strategy.name}`)
       const result = strategy.extract(ocrText)
       results.push(result)
-      
       console.log(`${strategy.name} results:`, {
         thc: result.thcPercentage,
         cbd: result.cbdPercentage,
         total: result.totalCannabinoids,
+        testDate: result.testDate,
+        terps: result.terpenes?.length || 0,
         confidence: result.confidence
       })
-      
-      // Early exit if we have high-confidence results
-      if (result.confidence >= 85 && hasCompleteData(result)) {
+      if (result.confidence >= 85 && hasCompleteDataLite(result)) {
         console.log('High confidence result found, stopping early')
         break
       }
     }
 
-    // Combine results using intelligent merging
-    let finalResult = combineResults(results, labType)
+    const finalResult = combineResults(results, labType)
 
-    // Safety pass to avoid missing date/terpenes
+    // Try terpene extraction ONLY if a terpene panel exists (prevents false 0s)
+    const terpPanel = findTerpenePanel(ocrText)
+    if (terpPanel) {
+      const terps = extractTerpenesFromPanel(terpPanel)
+      if (terps.length) {
+        finalResult.terpenes = terps.slice(0, 3)
+        finalResult.confidence = Math.min((finalResult.confidence || 0) + 8, 95)
+      }
+    } else {
+      console.log('No explicit terpene panel detected; skipping terpene parsing.')
+    }
+
+    // Try test date (2River styles) if missing
     if (!finalResult.testDate) {
-      const d = extractTestDate(ocrText)
-      if (d) finalResult.testDate = d
-    }
-    if (!finalResult.terpenes || finalResult.terpenes.length === 0) {
-      const terps = extractTerpenes(ocrText)
-      if (terps.length > 0) finalResult.terpenes = terps
-    }
-        
-    // AI enhancement if needed
-    if (shouldUseAIEnhancement(finalResult)) {
-      console.log('\nApplying AI enhancement')
-      const aiResult = await enhanceWithAI(ocrText, finalResult)
-      finalResult = combineResults([finalResult, aiResult], labType)
+      const iso = extractTestDateISO(ocrText)
+      if (iso) {
+        finalResult.testDate = iso
+        finalResult.confidence = Math.min((finalResult.confidence || 0) + 5, 95)
+      }
     }
 
     console.log('\nFinal result:', {
@@ -87,6 +81,7 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
       thc: finalResult.thcPercentage,
       cbd: finalResult.cbdPercentage,
       total: finalResult.totalCannabinoids,
+      testDate: finalResult.testDate,
       terpenes: finalResult.terpenes?.length || 0,
       confidence: finalResult.confidence,
       method: finalResult.extractionMethod
@@ -100,606 +95,329 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
   }
 }
 
-// Lab detection for strategy selection
+// ----------------- Lab detection -----------------
 function detectLabType(text: string): string {
   if (/2\s*RIVER\s*LABS/i.test(text)) return '2river'
   if (/SC\s*LABS/i.test(text)) return 'sclabs'
   if (/STEEP\s*HILL/i.test(text)) return 'steephill'
   return 'generic'
 }
-
 function detectLabName(text: string): string | null {
-  const labPatterns = [
-    /2\s*RIVER\s*LABS[^,\n]*/i,
-    /SC\s*LABS[^,\n]*/i,
-    /STEEP\s*HILL[^,\n]*/i
-  ]
-  
-  for (const pattern of labPatterns) {
-    const match = text.match(pattern)
-    if (match) return match[0].trim()
-  }
-  
+  const labs = [/2\s*RIVER\s*LABS[^,\n]*/i, /SC\s*LABS[^,\n]*/i, /STEEP\s*HILL[^,\n]*/i]
+  for (const p of labs) { const m = text.match(p); if (m) return m[0].trim() }
   return null
 }
 
-// Strategy factory
+// ----------------- Strategy factory -----------------
 function getExtractionStrategies(labType: string): ExtractionStrategy[] {
-  const baseStrategies: ExtractionStrategy[] = [
+  const base: ExtractionStrategy[] = [
     { name: 'structured_pattern', extract: structuredPatternExtraction },
     { name: 'numerical_analysis', extract: numericalAnalysisExtraction },
     { name: 'contextual_search', extract: contextualSearchExtraction }
   ]
-
-  // Add lab-specific strategies
-  if (labType === '2river') {
-    baseStrategies.unshift({ name: '2river_specific', extract: river2SpecificExtraction })
-  }
-
-  return baseStrategies
+  if (labType === '2river') base.unshift({ name: '2river_specific', extract: river2SpecificExtraction })
+  return base
 }
 
-// Strategy 1: 2River Labs specific patterns
+// ----------------- Strategies -----------------
 function river2SpecificExtraction(text: string): ExtractedData {
-  const result: ExtractedData = {
-    confidence: 40,
-    labName: "2 RIVER LABS, INC",
-    category: "INHALABLE",
-    extractionMethod: "2river_specific"
+  const res: ExtractedData = {
+    confidence: 40, labName: "2 RIVER LABS, INC", category: "INHALABLE", extractionMethod: "2river_specific"
   }
+  const clean = text.replace(/\s+/g, ' ').trim()
 
-  // Clean text for better matching
-  const cleanText = text.replace(/\s+/g, ' ').trim()
+  const batch = clean.match(/(?:BATCH\s*ID\s*:?\s*)?(EVM\d{4,})/i)
+  if (batch) { res.batchId = batch[1]; res.confidence += 15 }
 
-  // Extract batch ID - 2River uses EVM#### format
-  const batchMatch = cleanText.match(/(?:BATCH\s*ID\s*:?\s*)?(EVM\d{4})/i)
-  if (batchMatch) {
-    result.batchId = batchMatch[1]
-    result.confidence += 15
-  }
+  const sample = clean.match(/SAMPLE\s*:\s*([A-Z][A-Z\s&-]+?)\s*\(?FLOWER/i)
+  if (sample) { res.strainName = sample[1].trim(); res.confidence += 10 }
 
-  // Extract strain name from SAMPLE line
-  const sampleMatch = cleanText.match(/SAMPLE\s*:\s*([A-Z][A-Z\s&-]+?)\s*\(?FLOWER/i)
-  if (sampleMatch) {
-    result.strainName = sampleMatch[1].trim()
-    result.confidence += 10
-  }
+  if (/FLOWER|MATRIX:\s*FLOWER/i.test(text)) { res.subCategory = 'FLOWER'; res.confidence += 5 }
 
-  // Set sub-category for flower products
-  if (/FLOWER|MATRIX:\s*FLOWER/i.test(text)) {
-    result.subCategory = 'FLOWER'
-    result.confidence += 5
-  }
+  res.thcPercentage = extractCannabinoidValue(clean, 'THC')
+  res.cbdPercentage = extractCannabinoidValue(clean, 'CBD')
+  res.totalCannabinoids = extractCannabinoidValue(clean, 'TOTAL CANNABINOIDS')
 
-  // 2River cannabinoid extraction using multiple approaches
-  result.thcPercentage = extractCannabinoidValue(cleanText, 'THC')
-  result.cbdPercentage = extractCannabinoidValue(cleanText, 'CBD')
-  result.totalCannabinoids = extractCannabinoidValue(cleanText, 'TOTAL CANNABINOIDS')
+  if (res.thcPercentage != null) res.confidence += 25
+  if (res.cbdPercentage != null) res.confidence += 20
+  if (res.totalCannabinoids != null) res.confidence += 20
 
-  // Add confidence for found cannabinoids
-  if (result.thcPercentage) result.confidence += 25
-  if (result.cbdPercentage !== undefined) result.confidence += 20
-  if (result.totalCannabinoids) result.confidence += 20
+  // test date (from produced/tested lines)
+  const iso = extractTestDateISO(text)
+  if (iso) { res.testDate = iso; res.confidence += 5 }
 
-  // Example in river2SpecificExtraction / structuredPatternExtraction / contextualSearchExtraction
-  if (hasTerpenePanel(text)) {
-    const t = extractTerpenes(text);
-    if (t && t.length > 0) {
-      result.terpenes = t;
-      result.confidence += 10;
-    }
-  }
-
-  // Extract test date
-  const d = extractTestDate(text)
-  if (d) { result.testDate = d; result.confidence += 5 }
-
-  // Extract terpenes
-  result.terpenes = extractTerpenes(text)
-  if (result.terpenes.length > 0) result.confidence += 10
-
-  return result
+  // Don't parse terpenes here; done centrally with panel detection
+  return res
 }
 
-// Strategy 2: Structured pattern matching
 function structuredPatternExtraction(text: string): ExtractedData {
-  const result: ExtractedData = {
-    confidence: 30,
-    extractionMethod: "structured_pattern"
-  }
-
-  // Look for structured sections
-  const sections = text.split(/\n(?=[A-Z-]+:|M-\d+:|##)/g)
-  
-  for (const section of sections) {
-    // Look for potency sections
-    if (/POTENCY|CANNABINOID/i.test(section)) {
-      const cannabinoids = parseStructuredCannabinoids(section)
-      if (cannabinoids.thc) result.thcPercentage = cannabinoids.thc
-      if (cannabinoids.cbd !== undefined) result.cbdPercentage = cannabinoids.cbd
-      if (cannabinoids.total) result.totalCannabinoids = cannabinoids.total
-      
-      if (cannabinoids.thc || cannabinoids.cbd !== undefined || cannabinoids.total) {
-        result.confidence += 30
-      }
+  const res: ExtractedData = { confidence: 30, extractionMethod: "structured_pattern" }
+  const sections = text.split(/\n(?=[A-Z-]+:|M-\d+:|##|=== PAGE)/g)
+  for (const sec of sections) {
+    if (/POTENCY|CANNABINOID/i.test(sec)) {
+      const c = parseStructuredCannabinoids(sec)
+      if (c.thc != null) res.thcPercentage = c.thc
+      if (c.cbd != null) res.cbdPercentage = c.cbd
+      if (c.total != null) res.totalCannabinoids = c.total
+      if (c.thc != null || c.cbd != null || c.total != null) res.confidence += 30
     }
-
-    // Look for terpene sections
-    if (/TERPENE/i.test(section) && hasTerpenePanel(section)) {
-      const t = extractTerpenes(section)
-      if (t && t.length > 0) {
-        result.terpenes = t
-        result.confidence += 15
-      }
-    }
-
-    // Try to extract date from this section if we don’t have one yet
-    if (!result.testDate) {
-      const d = extractTestDate(section)
-      if (d) { result.testDate = d; result.confidence += 5 }
+    if (!res.testDate) {
+      const iso = extractTestDateISO(sec)
+      if (iso) { res.testDate = iso; res.confidence += 5 }
     }
   }
-
-  return result
+  return res
 }
 
-// Strategy 3: Numerical analysis
 function numericalAnalysisExtraction(text: string): ExtractedData {
-  const result: ExtractedData = {
-    confidence: 25,
-    extractionMethod: "numerical_analysis"
-  }
-
-  // Extract all decimal numbers
-  const decimals = text.match(/\d+\.\d+/g) || []
-  
-  // Analyze numbers for cannabinoid patterns
-  for (const decimal of decimals) {
-    const value = parseFloat(decimal)
-    
-    // THC typically 15-35% for flower
-    if (value >= 15 && value <= 35 && !result.thcPercentage) {
-      result.thcPercentage = value
-      result.confidence += 20
-    }
-    
-    // CBD typically 0.01-5% for most flower
-    if (value >= 0.01 && value <= 5 && !result.cbdPercentage) {
-      result.cbdPercentage = value
-      result.confidence += 15
-    }
-    
-    // Total cannabinoids should be close to THC + CBD
-    if (value >= 15 && value <= 40 && !result.totalCannabinoids) {
-      // Validate against THC if we have it
-      if (!result.thcPercentage || Math.abs(value - result.thcPercentage) <= 5) {
-        result.totalCannabinoids = value
-        result.confidence += 15
-      }
+  const res: ExtractedData = { confidence: 25, extractionMethod: "numerical_analysis" }
+  const nums = text.match(/\d+\.\d+/g) || []
+  for (const d of nums) {
+    const v = parseFloat(d)
+    if (v >= 15 && v <= 35 && res.thcPercentage == null) { res.thcPercentage = v; res.confidence += 20 }
+    if (v >= 0.01 && v <= 5 && res.cbdPercentage == null) { res.cbdPercentage = v; res.confidence += 15 }
+    if (v >= 15 && v <= 40 && res.totalCannabinoids == null) {
+      if (!res.thcPercentage || Math.abs(v - res.thcPercentage) <= 5) { res.totalCannabinoids = v; res.confidence += 15 }
     }
   }
-
-  return result
+  const iso = extractTestDateISO(text)
+  if (iso) { res.testDate = iso; res.confidence += 5 }
+  return res
 }
 
-// Strategy 4: Contextual search
 function contextualSearchExtraction(text: string): ExtractedData {
-  const result: ExtractedData = {
-    confidence: 20,
-    extractionMethod: "contextual_search"
+  const res: ExtractedData = { confidence: 20, extractionMethod: "contextual_search" }
+  const windows = [{ k: 'THC', f: 'thcPercentage' }, { k: 'CBD', f: 'cbdPercentage' }, { k: 'CANNABINOID', f: 'totalCannabinoids' }]
+  for (const w of windows) {
+    const v = findValueInContext(text, w.k)
+    if (v != null) { (res as any)[w.f] = v; res.confidence += 15 }
   }
+  const iso = extractTestDateISO(text)
+  if (iso) { res.testDate = iso; res.confidence += 5 }
+  return res
+}
 
-  // Search for cannabinoids in context windows
-  const contextWindows = [
-    { keyword: 'THC', field: 'thcPercentage' },
-    { keyword: 'CBD', field: 'cbdPercentage' },
-    { keyword: 'CANNABINOID', field: 'totalCannabinoids' }
+// ----------------- Date helpers -----------------
+function extractTestDateISO(text: string): string | undefined {
+  const monthMap: Record<string,string> =
+    { JAN:'01', FEB:'02', MAR:'03', APR:'04', MAY:'05', JUN:'06', JUL:'07', AUG:'08', SEP:'09', OCT:'10', NOV:'11', DEC:'12' }
+
+  const pats = [
+    /(?:PRODUCED|TEST\s*DATE|TESTED)\s*:?\s*([A-Z]{3})\s+(\d{1,2})[,.\s]+(\d{4})/i,
+    /M-\d+[A-Z]?:[^/]*\/\/\s*([A-Z]{3})\s+(\d{1,2})[,.\s]+(\d{4})/i,
+    /([A-Z]{3})\s+(\d{1,2})[,.\s]+(\d{4})/i
   ]
 
-  for (const window of contextWindows) {
-    const value = findValueInContext(text, window.keyword)
-    if (value) {
-      result[window.field as keyof ExtractedData] = value as any
-      result.confidence += 15
+  for (const r of pats) {
+    const m = text.match(r)
+    if (m) {
+      const mon = monthMap[m[1].toUpperCase()]
+      if (!mon) continue
+      const day = m[2].padStart(2, '0')
+      const year = m[3]
+      return `${year}-${mon}-${day}T00:00:00.000Z`
     }
   }
-
-  // Extract test date (context-agnostic)
-  const d = extractTestDate(text)
-  if (d) { result.testDate = d; result.confidence += 5 }
-
-  // Extract terpenes (only if a panel exists)
-  if (hasTerpenePanel(text)) {
-    const t = extractTerpenes(text)
-    if (t && t.length > 0) {
-      result.terpenes = t
-      result.confidence += 10
-    }
-  }
-
-  return result
+  return undefined
 }
 
-// Helper: Extract specific cannabinoid values
+// ----------------- Terpene panel parsing -----------------
+
+// Find the terpene panel slice to parse (M-0255: TERPENES BY GC-FID)
+function findTerpenePanel(text: string): string | null {
+  // Try to capture from the terpene header up to the next "M-" section or next page
+  const m = text.match(/(M-0?255[^]*?)(?=(?:\nM-\d{3}|\n=== PAGE|\n#\s+REGULATORY|$))/i)
+  if (m) {
+    console.log('✅ Terpene panel detected (M-0255). Section length:', m[1].length)
+    return m[1]
+  }
+  const alt = text.match(/(TERPENES?\s+BY\s+GC-?FID[^]*?)(?=(?:\nM-\d{3}|\n=== PAGE|\n#\s+REGULATORY|$))/i)
+  if (alt) {
+    console.log('✅ Terpene panel detected (TERPENES BY GC-FID). Section length:', alt[1].length)
+    return alt[1]
+  }
+  const prof = text.match(/(TERPENE\s+PROFILE[^]*?)(?=(?:\nM-\d{3}|\n=== PAGE|\n#\s+REGULATORY|$))/i)
+  if (prof) {
+    console.log('✅ Terpene panel detected (TERPENE PROFILE). Section length:', prof[1].length)
+    return prof[1]
+  }
+  return null
+}
+
+// Normalize names like "β-MYRCENE" → "Myrcene"
+function normalizeTerpName(raw: string): string {
+  const n = raw
+    .replace(/β|&beta;|BETA/gi, 'Beta-')
+    .replace(/α|&alpha;|ALPHA/gi, 'Alpha-')
+    .replace(/γ|&gamma;|GAMMA/gi, 'Gamma-')
+    .replace(/TRANS-|CIS-/gi, '')
+    .replace(/-OXIDE/gi, ' Oxide')
+    .replace(/[^A-Za-z -]/g, '')
+    .trim()
+    .toLowerCase()
+  // map common forms
+  const map: Record<string,string> = {
+    'limonene': 'Limonene',
+    'beta-myrcene': 'Myrcene', 'myrcene': 'Myrcene',
+    'beta-caryophyllene': 'Caryophyllene', 'caryophyllene': 'Caryophyllene',
+    'linalool': 'Linalool',
+    'alpha-humulene': 'Humulene', 'humulene': 'Humulene',
+    'beta-pinene': 'Beta-Pinene', 'pinene': 'Pinene', 'alpha-pinene': 'Alpha-Pinene',
+    'bisabolol': 'Bisabolol',
+    'terpinolene': 'Terpinolene',
+    'ocimene': 'Ocimene', 'cis-ocimene': 'Ocimene',
+    'eucalyptol': 'Eucalyptol',
+    'geraniol': 'Geraniol',
+    'guaiol': 'Guaiol',
+    'p-cymene': 'p-Cymene', 'cymene': 'Cymene',
+    'camphene': 'Camphene',
+    'caryophyllene oxide': 'Caryophyllene Oxide'
+  }
+  return map[n] || n.replace(/\b\w/g, c => c.toUpperCase())
+}
+
+// Parse AMT column values; handle %, mg/g, ND, < LOQ
+function parseAmtToPercent(amt: string): number | null {
+  if (!amt) return null
+  const s = amt.trim().toUpperCase()
+  if (s.includes('ND') || s.includes('< LOQ') || s.includes('<LOQ')) return null
+  // Percent like "0.514 %" or "0.514%"
+  const pm = s.match(/(-?\d+(?:\.\d+)?)\s*%/)
+  if (pm) return parseFloat(pm[1])
+
+  // mg/g like "5.14 mg/g" -> approx % (1 mg/g ≈ 0.1%)
+  const mg = s.match(/(-?\d+(?:\.\d+)?)\s*MG\/G/)
+  if (mg) return parseFloat(mg[1]) * 0.1
+
+  // Sometimes just a bare number in the AMT column that is % by context
+  const bare = s.match(/(-?\d+(?:\.\d+)?)(?![^])/)
+  if (bare) return parseFloat(bare[1])
+
+  return null
+}
+
+// Core terpene parser using the panel slice
+function extractTerpenesFromPanel(panel: string): Array<{ name: string; percentage: number }> {
+  const results: Record<string, number> = {}
+  const lines = panel.split(/\n| \| /g).map(l => l.trim()).filter(Boolean)
+
+  // Try to pair analyte + amt on each row-like sequence
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    // Skip headers
+    if (/ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL/i.test(line)) continue
+    if (/TOTAL\s+TERPENES/i.test(line)) continue
+
+    // Look for a terpene-like analyte name
+    const nameMatch = line.match(/\b([A-Zα-ωβγ\- ]{3,})\b/i)
+    if (!nameMatch) continue
+
+    // Collect a small window to find the numeric value
+    const window = [line, lines[i+1] || '', lines[i+2] || ''].join('  ')
+    const percent = parseAmtToPercent(window)
+    if (percent == null || percent <= 0) continue
+
+    const pretty = normalizeTerpName(nameMatch[1])
+    // store max if duplicated
+    results[pretty] = Math.max(results[pretty] || 0, percent)
+  }
+
+  const arr = Object.entries(results)
+    .map(([name, percentage]) => ({ name, percentage }))
+    .filter(t => t.percentage > 0 && t.percentage < 20) // sanity bounds
+    .sort((a, b) => b.percentage - a.percentage)
+
+  console.log('Parsed terpene candidates:', arr.slice(0, 6))
+  return arr.slice(0, 5) // keep up to 5; caller will slice to 3
+}
+
+// ----------------- Cannabinoid helpers -----------------
 function extractCannabinoidValue(text: string, cannabinoidType: string): number | undefined {
   const patterns = [
     new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:?\\s*(\\d+\\.?\\d*)\\s*%`, 'i'),
     new RegExp(`${cannabinoidType}\\s+TOTAL\\s*:?\\s*(\\d+\\.?\\d*)\\s*%`, 'i'),
     new RegExp(`${cannabinoidType}\\s*:?\\s*(\\d+\\.?\\d*)\\s*%`, 'i')
   ]
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern)
-    if (match) {
-      const value = parseFloat(match[1])
-      if (isValidCannabinoidValue(value, cannabinoidType)) {
-        return value
-      }
+  for (const r of patterns) {
+    const m = text.match(r)
+    if (m) {
+      const v = parseFloat(m[1])
+      if (isValidCannabinoidValue(v, cannabinoidType)) return v
     }
   }
-
   return undefined
 }
 
 function isValidCannabinoidValue(value: number, type: string): boolean {
   if (!isFinite(value) || value < 0) return false
-  
   switch (type.toUpperCase()) {
-    case 'THC':
-      return value >= 0 && value <= 50
-    case 'CBD':
-      return value >= 0 && value <= 30
-    case 'TOTAL CANNABINOIDS':
-      return value >= 0 && value <= 60
-    default:
-      return value >= 0 && value <= 100
+    case 'THC': return value <= 50
+    case 'CBD': return value <= 30
+    case 'TOTAL CANNABINOIDS': return value <= 60
+    default: return value <= 100
   }
 }
 
-// Helper: Parse cannabinoids from structured sections
 function parseStructuredCannabinoids(section: string): { thc?: number, cbd?: number, total?: number } {
-  const result: { thc?: number, cbd?: number, total?: number } = {}
-  
+  const out: any = {}
   const lines = section.split('\n')
-  for (const line of lines) {
-    if (/THC/i.test(line)) {
-      const match = line.match(/(\d+\.?\d*)\s*%/)
-      if (match) result.thc = parseFloat(match[1])
-    }
-    if (/CBD/i.test(line)) {
-      const match = line.match(/(\d+\.?\d*)\s*%/)
-      if (match) result.cbd = parseFloat(match[1])
-    }
-    if (/TOTAL.*CANNABINOID/i.test(line)) {
-      const match = line.match(/(\d+\.?\d*)\s*%/)
-      if (match) result.total = parseFloat(match[1])
-    }
+  for (const l of lines) {
+    if (/THC/i.test(l)) { const m = l.match(/(\d+\.?\d*)\s*%/); if (m) out.thc = parseFloat(m[1]) }
+    if (/CBD/i.test(l)) { const m = l.match(/(\d+\.?\d*)\s*%/); if (m) out.cbd = parseFloat(m[1]) }
+    if (/TOTAL.*CANNABINOID/i.test(l)) { const m = l.match(/(\d+\.?\d*)\s*%/); if (m) out.total = parseFloat(m[1]) }
   }
-  
-  return result
+  return out
 }
 
-// Helper: Find value in context window
 function findValueInContext(text: string, keyword: string, windowSize = 100): number | undefined {
-  const regex = new RegExp(keyword, 'gi')
-  let match
-  
-  while ((match = regex.exec(text)) !== null) {
-    const start = Math.max(0, match.index - windowSize)
-    const end = Math.min(text.length, match.index + keyword.length + windowSize)
-    const context = text.substring(start, end)
-    
-    const valueMatch = context.match(/(\d+\.?\d*)\s*%/)
-    if (valueMatch) {
-      const value = parseFloat(valueMatch[1])
-      if (isValidCannabinoidValue(value, keyword)) {
-        return value
-      }
+  const re = new RegExp(keyword, 'gi')
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const start = Math.max(0, m.index - windowSize)
+    const end = Math.min(text.length, m.index + keyword.length + windowSize)
+    const ctx = text.substring(start, end)
+    const vm = ctx.match(/(\d+\.?\d*)\s*%/)
+    if (vm) {
+      const v = parseFloat(vm[1])
+      if (isValidCannabinoidValue(v, keyword)) return v
     }
   }
-  
   return undefined
 }
 
-/** Extract test/analysis date and return ISO "YYYY-MM-DD" */
-function extractTestDate(text: string): string | undefined {
-  // Normalize a bit: collapse spaces, standardize separators that OCR might mangle (e.g., JAN 17.2024)
-  const t = text.replace(/\s+/g, ' ').toUpperCase()
-
-  const MONTHS: Record<string,string> = {
-    JAN:'01', FEB:'02', MAR:'03', APR:'04', MAY:'05', JUN:'06',
-    JUL:'07', AUG:'08', SEP:'09', OCT:'10', NOV:'11', DEC:'12'
-  }
-
-  // Try labeled formats first (highest confidence)
-  const labeled = [
-    /(?:TEST(?:ED)?|REPORT|PRODUCED|ANALYSIS(?:\s+COMPLETED)?)\s*DATE\s*[:\-]?\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/,
-    /(?:TEST(?:ED)?|PRODUCED)\s*[:\-]?\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/,
-    // Headers like: "POTENCY BY HPLC // JAN 15.2024"
-    /\/\/\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/
-  ]
-  for (const rx of labeled) {
-    const m = t.match(rx)
-    if (m) {
-      const mm = MONTHS[m[1]]
-      if (!mm) continue
-      const dd = String(parseInt(m[2], 10)).padStart(2, '0')
-      const yyyy = m[3]
-      return `${yyyy}-${mm}-${dd}`
-    }
-  }
-
-  // Numeric fallbacks
-  // YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
-  let m = t.match(/\b(20\d{2})[.\-\/](0?[1-9]|1[0-2])[.\-\/](0?[1-9]|[12]\d|3[01])\b/)
-  if (m) {
-    const yyyy = m[1]
-    const mm = String(parseInt(m[2], 10)).padStart(2, '0')
-    const dd = String(parseInt(m[3], 10)).padStart(2, '0')
-    return `${yyyy}-${mm}-${dd}`
-  }
-
-  // MM/DD/YYYY
-  m = t.match(/\b(0?[1-9]|1[0-2])[.\-\/](0?[1-9]|[12]\d|3[01])[.\-\/](20\d{2})\b/)
-  if (m) {
-    const mm = String(parseInt(m[1], 10)).padStart(2, '0')
-    const dd = String(parseInt(m[2], 10)).padStart(2, '0')
-    const yyyy = m[3]
-    return `${yyyy}-${mm}-${dd}`
-  }
-
-  // Generic: JAN 15 2024 (no label)
-  m = t.match(/\b([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})\b/)
-  if (m) {
-    const mm = MONTHS[m[1]]
-    if (!mm) return
-    const dd = String(parseInt(m[2], 10)).padStart(2, '0')
-    const yyyy = m[3]
-    return `${yyyy}-${mm}-${dd}`
-  }
-
-  return undefined
+// ----------------- Merge & scoring -----------------
+function hasCompleteDataLite(r: ExtractedData): boolean {
+  return !!(r.thcPercentage != null && r.totalCannabinoids != null)
 }
 
-function hasTerpenePanel(text: string): boolean {
-  return /(TERPENES?\b|TERPENE PROFILE|M[-\s]?0255\b|GC[-\s]?MS\b)/i.test(text);
-}
-
-/** Extract top terpenes (top 3 by %) from a possibly messy block */
-function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
-  if (!hasTerpenePanel(text)) {
-    return []; // no terpene section in this COA
-  }
-  // Try to focus on a terpene section if it exists; otherwise use full text
-  const section =
-    text.match(/(?:TERPENE\S*|M-0255)[\s\S]{0,2000}(?=M-\d+|PAGE|\Z)/i)?.[0] ||
-    text
-
-  // Known terpene lexicon w/ aliases normalization
-  const aliases: Record<string, string> = {
-    'ALPHA PINENE': 'ALPHA-PINENE', 'A PINENE': 'ALPHA-PINENE', 'Α-PINENE': 'ALPHA-PINENE',
-    'BETA PINENE': 'BETA-PINENE',  'B PINENE': 'BETA-PINENE',  'Β-PINENE': 'BETA-PINENE',
-    'BETA CARYOPHYLLENE': 'CARYOPHYLLENE', 'Β-CARYOPHYLLENE': 'CARYOPHYLLENE',
-    'ALPHA HUMULENE': 'HUMULENE', 'Α-HUMULENE': 'HUMULENE',
-    'P CYMENE': 'P-CYMENE', 'Ρ CYMENE': 'P-CYMENE',
-    'LINALOL': 'LINALOOL'
-  }
-
-  const keepNames = new Set([
-    'MYRCENE','LIMONENE','CARYOPHYLLENE','LINALOOL','ALPHA-PINENE','BETA-PINENE',
-    'HUMULENE','TERPINOLENE','OCIMENE','TERPINEOL','TERPINENE','CARYOPHYLLENE OXIDE',
-    'BISABOLOL','NEROLIDOL','P-CYMENE','BORNYL ACETATE','CAMPHENE','EUCALYPTOL','SABINENE'
-  ])
-
-  // Patterns: handle %, mg/g, ppm, and cases where % is missing but implied
-  // 1) NAME .... 0.42 %
-  // 2) NAME .... 0.42% 
-  // 3) NAME .... 0.42 mg/g (approximate to % by dividing by 10 for flower ~ heuristic)
-  // 4) 0.42 % .... NAME
-  const candidates: Array<{ name: string; pct: number }> = []
-
-  const lineRx = /([A-Z()\-\/\s]{3,40}?)[ :\-]*([0-9]+(?:\.[0-9]+)?)\s*(%|MG\/G|PPM)\b/gi
-  let m: RegExpExecArray | null
-  while ((m = lineRx.exec(section)) !== null) {
-    let rawName = m[1].trim().replace(/\s+/g, ' ')
-    let unit = m[3].toUpperCase()
-    // Normalize greek letters/aliases
-    rawName = rawName
-      .replace(/[αΑ]/g, 'A')
-      .replace(/[βΒ]/g, 'B')
-      .replace(/[ρΡ]/g, 'P')
-    if (aliases[rawName.toUpperCase()]) rawName = aliases[rawName.toUpperCase()]
-
-    // Keep only plausible terpene names
-    let name = rawName.toUpperCase()
-    // Heuristic filter: must contain a common terpene token
-    const plausible =
-      Array.from(keepNames).some(k => name.includes(k)) ||
-      /(?:ENE|OOL|OL|OXIDE)\b/.test(name)
-    if (!plausible) continue
-
-    let pct = parseFloat(m[2])
-    if (unit === 'MG/G') {
-      // Rough conversion: mg/g ~ 0.1% per mg/g for flower (heuristic, avoids huge ppm)
-      pct = pct / 10
-    } else if (unit === 'PPM') {
-      // 10000 ppm ≈ 1% (very rough), so ppm/10000
-      pct = pct / 10000
-    }
-    if (pct <= 0 || pct >= 10) continue
-
-    // Canonicalize a few names (e.g., "CARYOPHYLLENE" over beta- variant)
-    if (name.includes('CARYOPHYLLENE')) name = 'CARYOPHYLLENE'
-    if (name.includes('HUMULENE')) name = 'HUMULENE'
-    if (name.includes('PINENE')) {
-      if (name.includes('ALPHA')) name = 'ALPHA-PINENE'
-      else if (name.includes('BETA')) name = 'BETA-PINENE'
-      else name = 'PINENE'
-    }
-
-    // Title case for output
-    const pretty = name
-      .toLowerCase()
-      .replace(/\b([a-z])/g, s => s.toUpperCase())
-      .replace(/-([a-z])/g, (_, c) => '-' + c.toUpperCase())
-
-    candidates.push({ name: pretty, pct })
-  }
-
-  // Fallback: loose scan for "NAME ... 0.xx%" when line pattern misses
-  if (candidates.length === 0) {
-    const loose = /(MYRCENE|LIMONENE|CARYOPHYLLENE|LINALOOL|PINENE|HUMULENE|TERPINOLENE|OCIMENE|BISABOLOL|NEROLIDOL)[^%]{0,40}?([0-9]+(?:\.[0-9]+)?)\s*%/gi
-    let lm: RegExpExecArray | null
-    while ((lm = loose.exec(section)) !== null) {
-      const nm = lm[1].toLowerCase().replace(/\b([a-z])/g, s => s.toUpperCase())
-      const pct = parseFloat(lm[2])
-      if (pct > 0 && pct < 10) candidates.push({ name: nm, pct })
-    }
-  }
-
-  // Consolidate by max value per name and return top 3
-  const best = new Map<string, number>()
-  for (const { name, pct } of candidates) {
-    best.set(name, Math.max(pct, best.get(name) ?? 0))
-  }
-
-  return Array.from(best.entries())
-    .map(([name, percentage]) => ({ name, percentage }))
-    .sort((a, b) => b.percentage - a.percentage)
-    .slice(0, 3)
-}
-
-// Helper: Check if result has complete data
-function hasCompleteData(result: ExtractedData): boolean {
-  return !!(
-    result.batchId &&
-    result.strainName &&
-    result.thcPercentage !== undefined &&
-    result.cbdPercentage !== undefined &&
-    result.totalCannabinoids !== undefined
-  )
-}
-
-// Helper: Determine if AI enhancement is needed
-function shouldUseAIEnhancement(result: ExtractedData): boolean {
-  // Use AI if we're missing critical cannabinoid data and confidence is low
-  return (
-    result.confidence < 70 ||
-    (!result.thcPercentage && !result.cbdPercentage && !result.totalCannabinoids)
-  )
-}
-
-// AI enhancement
-async function enhanceWithAI(text: string, baseResult: ExtractedData): Promise<ExtractedData> {
-  const apiKey = process.env.MISTRAL_API_KEY
-  if (!apiKey) {
-    return { ...baseResult, extractionMethod: 'ai_enhancement_skipped' }
-  }
-
-  try {
-    const prompt = `Extract cannabis COA data from this text. Return only JSON.
-
-Expected format:
-{
-  "batchId": "string or null",
-  "strainName": "string or null", 
-  "thcPercentage": number or null,
-  "cbdPercentage": number or null,
-  "totalCannabinoids": number or null,
-  "terpenes": [{"name": "string", "percentage": number}]
-}
-
-Focus on finding:
-- Batch IDs (like EVM####)
-- Strain names from sample lines
-- THC percentages (typically 15-35%)
-- CBD percentages (typically 0.01-5%)
-- Total cannabinoid percentages
-- Top terpenes with percentages
-
-Text: ${text.substring(0, 3000)}`
-
-    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'mistral-large-latest',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1000,
-        temperature: 0.1,
-        response_format: { type: 'json_object' }
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`)
-    }
-
-    const data: MistralExtractionResponse = await response.json()
-    const content = data.choices[0].message.content
-    const parsed = JSON.parse(content)
-
-    return {
-      ...baseResult,
-      batchId: parsed.batchId || baseResult.batchId,
-      strainName: parsed.strainName || baseResult.strainName,
-      thcPercentage: parsed.thcPercentage || baseResult.thcPercentage,
-      cbdPercentage: parsed.cbdPercentage !== null ? parsed.cbdPercentage : baseResult.cbdPercentage,
-      totalCannabinoids: parsed.totalCannabinoids || baseResult.totalCannabinoids,
-      terpenes: parsed.terpenes || baseResult.terpenes,
-      confidence: Math.min((baseResult.confidence || 0) + 15, 95),
-      extractionMethod: 'ai_enhanced'
-    }
-
-  } catch (error) {
-    console.error('AI enhancement failed:', error)
-    return { ...baseResult, extractionMethod: 'ai_enhancement_failed' }
-  }
-}
-
-// Intelligent result combination
 function combineResults(results: ExtractedData[], labType: string): ExtractedData {
-  if (results.length === 0) {
-    return { confidence: 10, labName: "UNKNOWN LAB" }
-  }
-
-  // Start with highest confidence result
+  if (!results.length) return { confidence: 10, labName: "UNKNOWN LAB" }
   const sorted = results.sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
-  const base = { ...sorted[0] }
+  const base: ExtractedData = { ...sorted[0] }
 
-  // Fill gaps from other results
-  for (const result of sorted.slice(1)) {
-    if (!base.batchId && result.batchId) base.batchId = result.batchId
-    if (!base.strainName && result.strainName) base.strainName = result.strainName
-    if (!base.thcPercentage && result.thcPercentage) base.thcPercentage = result.thcPercentage
-    if (base.cbdPercentage === undefined && result.cbdPercentage !== undefined) base.cbdPercentage = result.cbdPercentage
-    if (!base.totalCannabinoids && result.totalCannabinoids) base.totalCannabinoids = result.totalCannabinoids
-    if ((!base.terpenes || base.terpenes.length === 0) && result.terpenes) base.terpenes = result.terpenes
+  for (const r of sorted.slice(1)) {
+    if (!base.batchId && r.batchId) base.batchId = r.batchId
+    if (!base.strainName && r.strainName) base.strainName = r.strainName
+    if (base.thcPercentage == null && r.thcPercentage != null) base.thcPercentage = r.thcPercentage
+    if (base.cbdPercentage == null && r.cbdPercentage != null) base.cbdPercentage = r.cbdPercentage
+    if (base.totalCannabinoids == null && r.totalCannabinoids != null) base.totalCannabinoids = r.totalCannabinoids
+    if (!base.testDate && r.testDate) base.testDate = r.testDate
+    if ((!base.terpenes || base.terpenes.length === 0) && r.terpenes) base.terpenes = r.terpenes
   }
 
-  // Calculate final confidence
-  let finalConfidence = base.confidence || 10
-  
-  // Boost confidence for completeness
-  if (base.batchId) finalConfidence += 5
-  if (base.strainName) finalConfidence += 5
-  if (base.thcPercentage) finalConfidence += 20
-  if (base.cbdPercentage !== undefined) finalConfidence += 15
-  if (base.totalCannabinoids) finalConfidence += 15
-  if (base.terpenes && base.terpenes.length > 0) finalConfidence += 10
+  let conf = base.confidence || 10
+  if (base.batchId) conf += 5
+  if (base.strainName) conf += 5
+  if (base.thcPercentage != null) conf += 20
+  if (base.cbdPercentage != null) conf += 15
+  if (base.totalCannabinoids != null) conf += 15
+  if (base.testDate) conf += 10
+  if (base.terpenes && base.terpenes.length) conf += 10
+  if (base.thcPercentage != null && base.totalCannabinoids != null && Math.abs(base.totalCannabinoids - base.thcPercentage) <= 2) conf += 8
 
-  // Validation bonus
-  if (base.thcPercentage && base.totalCannabinoids) {
-    const diff = Math.abs(base.totalCannabinoids - base.thcPercentage)
-    if (diff <= 2) finalConfidence += 10
-  }
+  base.confidence = Math.min(conf, 95)
 
-  base.confidence = Math.min(finalConfidence, 95)
-
-  // Set lab-specific defaults
   if (labType === '2river') {
     base.labName = base.labName || "2 RIVER LABS, INC"
     base.category = base.category || "INHALABLE"
@@ -707,6 +425,5 @@ function combineResults(results: ExtractedData[], labType: string): ExtractedDat
   }
 
   base.extractionMethod = 'combined_strategies'
-  
   return base
 }
