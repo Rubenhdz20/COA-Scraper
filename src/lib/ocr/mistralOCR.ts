@@ -217,10 +217,11 @@ class MistralOCRService {
       .replace(/\*\*(.*?)\*\*/g, '$1')           // Remove bold markdown **text**
       .replace(/\*(.*?)\*/g, '$1')               // Remove italic markdown *text*
       .replace(/`(.*?)`/g, '$1')                 // Remove code markdown `text`
-      .replace(/\[(.*?)\]\(.*?\)/g, '$1')       // Remove markdown links [text](url)
-      .replace(/^\s*[\|\-\+\=\s]+$/gm, '')      // Remove table separators
-      .replace(/^\s*\|/gm, '')                  // Remove table pipe starts
-      .replace(/\|\s*$/gm, '')                  // Remove table pipe ends
+      .replace(/\[(.*?)\]\(.*?\)/g, '$1') 
+      .replace(/^\s*\|[\s\|]*\|?\s*$/gm, '')       // Remove empty table rows only
+      // .replace(/^\s*[\|\-\+\=\s]+$/gm, '')      // Remove table separators
+      // .replace(/^\s*\|/gm, '')                  // Remove table pipe starts
+      // .replace(/\|\s*$/gm, '')                  // Remove table pipe ends
 
     // 2. COMMON OCR CHARACTER FIXES - Critical for numbers and percentages
     cleaned = cleaned

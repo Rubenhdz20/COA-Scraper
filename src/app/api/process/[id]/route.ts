@@ -214,20 +214,20 @@ export async function POST(
 
       // Prepare data for database update
       const updateData = {
-        processingStatus: 'completed' as const,
+        processingStatus: 'completed',
         rawText: ocrResult.extractedText,
         ocrProvider: ocrResult.provider,
-        confidence: confidenceFactors.finalConfidence,
-        batchId: extractedData.batchId || null,
-        strainName: extractedData.strainName || null,
-        category: extractedData.category || null,
-        subCategory: extractedData.subCategory || null,
-        thcPercentage: extractedData.thcPercentage || null,
-        cbdPercentage: extractedData.cbdPercentage || null,
-        totalCannabinoids: extractedData.totalCannabinoids || null,
-        labName: extractedData.labName || null,
-        testDate: extractedData.testDate ? new Date(extractedData.testDate) : null,
-        terpenes: extractedData.terpenes ? JSON.stringify(extractedData.terpenes) : null
+        confidence: extractedData.confidence,
+        batchId: extractedData.batchId,
+        strainName: extractedData.strainName,
+        category: extractedData.category,
+        subCategory: extractedData.subCategory,
+        thcPercentage: extractedData.thcPercentage,
+        cbdPercentage: extractedData.cbdPercentage,
+        totalCannabinoids: extractedData.totalCannabinoids,
+        labName: extractedData.labName,
+        testDate: extractedData.testDate,  // Make sure this is included
+        terpenes: JSON.stringify(extractedData.terpenes)  // And this
       }
 
       console.log('Saving to database with data:', {
