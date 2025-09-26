@@ -62,8 +62,18 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
     }
 
     // Combine results using intelligent merging
-    const finalResult = combineResults(results, labType)
-    
+    let finalResult = combineResults(results, labType)
+
+    // Safety pass to avoid missing date/terpenes
+    if (!finalResult.testDate) {
+      const d = extractTestDate(ocrText)
+      if (d) finalResult.testDate = d
+    }
+    if (!finalResult.terpenes || finalResult.terpenes.length === 0) {
+      const terps = extractTerpenes(ocrText)
+      if (terps.length > 0) finalResult.terpenes = terps
+    }
+        
     // AI enhancement if needed
     if (shouldUseAIEnhancement(finalResult)) {
       console.log('\nApplying AI enhancement')
@@ -170,6 +180,9 @@ function river2SpecificExtraction(text: string): ExtractedData {
   if (result.thcPercentage) result.confidence += 25
   if (result.cbdPercentage !== undefined) result.confidence += 20
   if (result.totalCannabinoids) result.confidence += 20
+  // Extract test date
+  const d = extractTestDate(text)
+  if (d) { result.testDate = d; result.confidence += 5 }
 
   // Extract terpenes
   result.terpenes = extractTerpenes(text)
@@ -205,6 +218,12 @@ function structuredPatternExtraction(text: string): ExtractedData {
     if (/TERPENE/i.test(section)) {
       result.terpenes = extractTerpenes(section)
       if (result.terpenes.length > 0) result.confidence += 15
+    }
+
+    // Try to extract date from this section if we don’t have one yet
+    if (!result.testDate) {
+      const d = extractTestDate(section)
+      if (d) { result.testDate = d; result.confidence += 5 }
     }
   }
 
@@ -271,6 +290,14 @@ function contextualSearchExtraction(text: string): ExtractedData {
       result.confidence += 15
     }
   }
+
+  // Extract test date (context-agnostic)
+  const d = extractTestDate(text)
+  if (d) { result.testDate = d; result.confidence += 5 }
+
+  // Extract terpenes (broad scan)
+  const terps = extractTerpenes(text)
+  if (terps.length > 0) { result.terpenes = terps; result.confidence += 10 }
 
   return result
 }
@@ -356,29 +383,163 @@ function findValueInContext(text: string, keyword: string, windowSize = 100): nu
   return undefined
 }
 
-// Helper: Extract terpenes
-function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
-  const terpenes: Array<{ name: string; percentage: number }> = []
-  
-  const terpenePatterns = [
-    /([A-Z-]+(?:ENE|OOL|INE))\s+(\d+\.\d+)\s*%/gi,
-    /(LIMONENE|MYRCENE|CARYOPHYLLENE|LINALOOL|PINENE|HUMULENE)\s+(\d+\.\d+)\s*%/gi
+/** Extract test/analysis date and return ISO "YYYY-MM-DD" */
+function extractTestDate(text: string): string | undefined {
+  // Normalize a bit: collapse spaces, standardize separators that OCR might mangle (e.g., JAN 17.2024)
+  const t = text.replace(/\s+/g, ' ').toUpperCase()
+
+  const MONTHS: Record<string,string> = {
+    JAN:'01', FEB:'02', MAR:'03', APR:'04', MAY:'05', JUN:'06',
+    JUL:'07', AUG:'08', SEP:'09', OCT:'10', NOV:'11', DEC:'12'
+  }
+
+  // Try labeled formats first (highest confidence)
+  const labeled = [
+    /(?:TEST(?:ED)?|REPORT|PRODUCED|ANALYSIS(?:\s+COMPLETED)?)\s*DATE\s*[:\-]?\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/,
+    /(?:TEST(?:ED)?|PRODUCED)\s*[:\-]?\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/,
+    // Headers like: "POTENCY BY HPLC // JAN 15.2024"
+    /\/\/\s*([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})/
   ]
-  
-  for (const pattern of terpenePatterns) {
-    let match
-    while ((match = pattern.exec(text)) !== null) {
-      const name = match[1].trim()
-      const percentage = parseFloat(match[2])
-      
-      if (percentage > 0 && percentage < 10) {
-        terpenes.push({ name, percentage })
-      }
+  for (const rx of labeled) {
+    const m = t.match(rx)
+    if (m) {
+      const mm = MONTHS[m[1]]
+      if (!mm) continue
+      const dd = String(parseInt(m[2], 10)).padStart(2, '0')
+      const yyyy = m[3]
+      return `${yyyy}-${mm}-${dd}`
     }
   }
-  
-  // Sort by percentage and return top 3
-  return terpenes
+
+  // Numeric fallbacks
+  // YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+  let m = t.match(/\b(20\d{2})[.\-\/](0?[1-9]|1[0-2])[.\-\/](0?[1-9]|[12]\d|3[01])\b/)
+  if (m) {
+    const yyyy = m[1]
+    const mm = String(parseInt(m[2], 10)).padStart(2, '0')
+    const dd = String(parseInt(m[3], 10)).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  // MM/DD/YYYY
+  m = t.match(/\b(0?[1-9]|1[0-2])[.\-\/](0?[1-9]|[12]\d|3[01])[.\-\/](20\d{2})\b/)
+  if (m) {
+    const mm = String(parseInt(m[1], 10)).padStart(2, '0')
+    const dd = String(parseInt(m[2], 10)).padStart(2, '0')
+    const yyyy = m[3]
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  // Generic: JAN 15 2024 (no label)
+  m = t.match(/\b([A-Z]{3})\s+(\d{1,2})[.,\/\-\s]+(20\d{2})\b/)
+  if (m) {
+    const mm = MONTHS[m[1]]
+    if (!mm) return
+    const dd = String(parseInt(m[2], 10)).padStart(2, '0')
+    const yyyy = m[3]
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  return undefined
+}
+
+/** Extract top terpenes (top 3 by %) from a possibly messy block */
+function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
+  // Try to focus on a terpene section if it exists; otherwise use full text
+  const section =
+    text.match(/(?:TERPENE\S*|M-0255)[\s\S]{0,2000}(?=M-\d+|PAGE|\Z)/i)?.[0] ||
+    text
+
+  // Known terpene lexicon w/ aliases normalization
+  const aliases: Record<string, string> = {
+    'ALPHA PINENE': 'ALPHA-PINENE', 'A PINENE': 'ALPHA-PINENE', 'Α-PINENE': 'ALPHA-PINENE',
+    'BETA PINENE': 'BETA-PINENE',  'B PINENE': 'BETA-PINENE',  'Β-PINENE': 'BETA-PINENE',
+    'BETA CARYOPHYLLENE': 'CARYOPHYLLENE', 'Β-CARYOPHYLLENE': 'CARYOPHYLLENE',
+    'ALPHA HUMULENE': 'HUMULENE', 'Α-HUMULENE': 'HUMULENE',
+    'P CYMENE': 'P-CYMENE', 'Ρ CYMENE': 'P-CYMENE',
+    'LINALOL': 'LINALOOL'
+  }
+
+  const keepNames = new Set([
+    'MYRCENE','LIMONENE','CARYOPHYLLENE','LINALOOL','ALPHA-PINENE','BETA-PINENE',
+    'HUMULENE','TERPINOLENE','OCIMENE','TERPINEOL','TERPINENE','CARYOPHYLLENE OXIDE',
+    'BISABOLOL','NEROLIDOL','P-CYMENE','BORNYL ACETATE','CAMPHENE','EUCALYPTOL','SABINENE'
+  ])
+
+  // Patterns: handle %, mg/g, ppm, and cases where % is missing but implied
+  // 1) NAME .... 0.42 %
+  // 2) NAME .... 0.42% 
+  // 3) NAME .... 0.42 mg/g (approximate to % by dividing by 10 for flower ~ heuristic)
+  // 4) 0.42 % .... NAME
+  const candidates: Array<{ name: string; pct: number }> = []
+
+  const lineRx = /([A-Z()\-\/\s]{3,40}?)[ :\-]*([0-9]+(?:\.[0-9]+)?)\s*(%|MG\/G|PPM)\b/gi
+  let m: RegExpExecArray | null
+  while ((m = lineRx.exec(section)) !== null) {
+    let rawName = m[1].trim().replace(/\s+/g, ' ')
+    let unit = m[3].toUpperCase()
+    // Normalize greek letters/aliases
+    rawName = rawName
+      .replace(/[αΑ]/g, 'A')
+      .replace(/[βΒ]/g, 'B')
+      .replace(/[ρΡ]/g, 'P')
+    if (aliases[rawName.toUpperCase()]) rawName = aliases[rawName.toUpperCase()]
+
+    // Keep only plausible terpene names
+    let name = rawName.toUpperCase()
+    // Heuristic filter: must contain a common terpene token
+    const plausible =
+      Array.from(keepNames).some(k => name.includes(k)) ||
+      /(?:ENE|OOL|OL|OXIDE)\b/.test(name)
+    if (!plausible) continue
+
+    let pct = parseFloat(m[2])
+    if (unit === 'MG/G') {
+      // Rough conversion: mg/g ~ 0.1% per mg/g for flower (heuristic, avoids huge ppm)
+      pct = pct / 10
+    } else if (unit === 'PPM') {
+      // 10000 ppm ≈ 1% (very rough), so ppm/10000
+      pct = pct / 10000
+    }
+    if (pct <= 0 || pct >= 10) continue
+
+    // Canonicalize a few names (e.g., "CARYOPHYLLENE" over beta- variant)
+    if (name.includes('CARYOPHYLLENE')) name = 'CARYOPHYLLENE'
+    if (name.includes('HUMULENE')) name = 'HUMULENE'
+    if (name.includes('PINENE')) {
+      if (name.includes('ALPHA')) name = 'ALPHA-PINENE'
+      else if (name.includes('BETA')) name = 'BETA-PINENE'
+      else name = 'PINENE'
+    }
+
+    // Title case for output
+    const pretty = name
+      .toLowerCase()
+      .replace(/\b([a-z])/g, s => s.toUpperCase())
+      .replace(/-([a-z])/g, (_, c) => '-' + c.toUpperCase())
+
+    candidates.push({ name: pretty, pct })
+  }
+
+  // Fallback: loose scan for "NAME ... 0.xx%" when line pattern misses
+  if (candidates.length === 0) {
+    const loose = /(MYRCENE|LIMONENE|CARYOPHYLLENE|LINALOOL|PINENE|HUMULENE|TERPINOLENE|OCIMENE|BISABOLOL|NEROLIDOL)[^%]{0,40}?([0-9]+(?:\.[0-9]+)?)\s*%/gi
+    let lm: RegExpExecArray | null
+    while ((lm = loose.exec(section)) !== null) {
+      const nm = lm[1].toLowerCase().replace(/\b([a-z])/g, s => s.toUpperCase())
+      const pct = parseFloat(lm[2])
+      if (pct > 0 && pct < 10) candidates.push({ name: nm, pct })
+    }
+  }
+
+  // Consolidate by max value per name and return top 3
+  const best = new Map<string, number>()
+  for (const { name, pct } of candidates) {
+    best.set(name, Math.max(pct, best.get(name) ?? 0))
+  }
+
+  return Array.from(best.entries())
+    .map(([name, percentage]) => ({ name, percentage }))
     .sort((a, b) => b.percentage - a.percentage)
     .slice(0, 3)
 }
