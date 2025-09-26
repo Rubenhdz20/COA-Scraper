@@ -33,10 +33,12 @@ class MistralOCRService {
   }
 
   async processDocument(filePath: string): Promise<OCRResult> {
+    
     const startTime = Date.now()
 
     try {
       console.log('Starting Mistral OCR processing for:', filePath)
+      
 
       // Validate file exists and size
       const stats = await fs.promises.stat(filePath)
@@ -81,8 +83,16 @@ class MistralOCRService {
 
       console.log('Raw extracted text length:', rawText.length)
       console.log('Raw text preview:', rawText.substring(0, 300) + '...')
+      // In processDocument method, right after extractTextFromResponse
+    console.log('=== DIAGNOSTIC: RAW OCR TEXT ===')
+    console.log('First 2000 characters:')
+    console.log(rawText.substring(0, 2000))
+    console.log('=== SEARCHING FOR MISSING DATA ===')
+    console.log('Date patterns found:', rawText.match(/(PRODUCED|NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*:?\s*\d{1,2}/gi))
+    console.log('Terpene patterns found:', rawText.match(/(TERPENE|MYRCENE|LIMONENE|CARYOPHYLLENE)/gi))
+    console.log('=== END DIAGNOSTIC ===')
 
-      // FIXED: Apply minimal cleaning that preserves dates and terpenes
+      // ENHANCED: Apply comprehensive text cleaning for COA documents
       const cleanedText = this.cleanOCRTextForCOA(rawText)
       
       console.log('Cleaned text length:', cleanedText.length)
@@ -196,56 +206,104 @@ class MistralOCRService {
     }
   }
 
-  // FIXED: Minimal text cleaning that preserves dates and terpenes
+  // NEW: Comprehensive text cleaning specifically for COA documents
   private cleanOCRTextForCOA(text: string): string {
-    console.log('Starting minimal OCR text cleaning...')
+    console.log('Starting comprehensive OCR text cleaning...')
     
     let cleaned = text
 
-    // 1. MINIMAL MARKDOWN CLEANING - Only remove obvious markdown artifacts
+    // 1. MARKDOWN CLEANING - Remove markdown formatting that might interfere
     cleaned = cleaned
       .replace(/\*\*(.*?)\*\*/g, '$1')           // Remove bold markdown **text**
       .replace(/\*(.*?)\*/g, '$1')               // Remove italic markdown *text*
       .replace(/`(.*?)`/g, '$1')                 // Remove code markdown `text`
       .replace(/\[(.*?)\]\(.*?\)/g, '$1')       // Remove markdown links [text](url)
-      // REMOVED: Table separator cleaning that was destroying terpene data
+      .replace(/^\s*[\|\-\+\=\s]+$/gm, '')      // Remove table separators
+      .replace(/^\s*\|/gm, '')                  // Remove table pipe starts
+      .replace(/\|\s*$/gm, '')                  // Remove table pipe ends
 
-    // 2. ESSENTIAL CHARACTER FIXES - Only critical number/percentage fixes
+    // 2. COMMON OCR CHARACTER FIXES - Critical for numbers and percentages
     cleaned = cleaned
-      // Only fix obvious character substitutions that affect numbers
+      // Character substitutions that affect numbers
+      .replace(/\bO\b/g, '0')                   // Standalone O -> 0
       .replace(/(?<=\d)O(?=\d)/g, '0')          // O between digits -> 0
       .replace(/(?<=\d)o(?=\d)/g, '0')          // o between digits -> 0
+      .replace(/\bl\b/g, '1')                   // Standalone l -> 1
       .replace(/(?<=\d)l(?=\d)/g, '1')          // l between digits -> 1
       .replace(/(?<=\d)I(?=\d)/g, '1')          // I between digits -> 1
+      .replace(/\bS\b(?=\d)/g, '5')             // S before digits -> 5
+      .replace(/(?<=\d)S\b/g, '5')              // S after digits -> 5
+      .replace(/\bZ\b(?=\d)/g, '2')             // Z before digits -> 2
+      .replace(/(?<=\d)Z(?=\.)/g, '2')          // Z before decimal -> 2
+      .replace(/\|(?=\d)/g, '1')                // | before digits -> 1
+      .replace(/(?<=\d)\|/g, '1')               // | after digits -> 1
 
-    // 3. MINIMAL SPACING FIXES - Only normalize critical spacing
+    // 3. DECIMAL POINT FIXES
+    cleaned = cleaned
+      .replace(/(\d)\s*\,\s*(\d)/g, '$1.$2')    // Fix comma decimals: 24,2 -> 24.2
+      .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')     // Fix semicolon decimals: 24;2 -> 24.2
+      .replace(/(\d)\s+(\d{1,4})\s*%/g, '$1.$2%') // Fix spaced decimals: 24 2% -> 24.2%
+
+    // 4. PERCENTAGE SYMBOL FIXES
+    cleaned = cleaned
+      .replace(/(\d+\.?\d*)\s*\/o/gi, '$1%')    // /o -> %
+      .replace(/(\d+\.?\d*)\s*°\/o/gi, '$1%')   // °/o -> %
+      .replace(/(\d+\.?\d*)\s*º/gi, '$1%')      // º -> %
+      .replace(/(\d+\.?\d*)\s*°/gi, '$1%')      // ° -> %
+      .replace(/(\d+\.?\d*)\s*％/gi, '$1%')      // Full-width % -> %
+
+    // 5. SPACING NORMALIZATION - Critical for regex matching
     cleaned = cleaned
       .replace(/\s+/g, ' ')                     // Multiple spaces -> single space
+      .replace(/(\w)\s*:\s*(\w)/g, '$1: $2')    // Normalize colons: "THC:24" -> "THC: 24"
       .replace(/(\d+\.?\d*)\s*%/g, '$1%')       // Remove space before %
+      .replace(/THC\s+:/gi, 'THC:')             // "THC :" -> "THC:"
+      .replace(/CBD\s+:/gi, 'CBD:')             // "CBD :" -> "CBD:"
+      .replace(/TOTAL\s+THC/gi, 'TOTAL THC')    // Normalize "TOTAL THC"
+      .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')    // Normalize "TOTAL CBD"
+      .replace(/TOTAL\s+CANNABINOIDS/gi, 'TOTAL CANNABINOIDS')
 
-    // 4. PRESERVE STRUCTURE - Keep line breaks and formatting
+    // 6. CANNABINOID LABEL FIXES - Fix common OCR errors in labels
     cleaned = cleaned
-      .replace(/\n\s*\n\s*\n/g, '\n\n')         // Reduce excessive line breaks only
+      .replace(/TH[CG]/gi, 'THC')               // THG -> THC
+      .replace(/CB[DO]/gi, 'CBD')               // CBO -> CBD
+      .replace(/CANN[AI]BINOIDS/gi, 'CANNABINOIDS') // Fix A/I confusion
+      .replace(/CANNABIN[O0]IDS/gi, 'CANNABINOIDS') // Fix O/0 confusion
+
+    // 7. STRUCTURAL IMPROVEMENTS
+    cleaned = cleaned
+      // .replace(/^\s*PAGE\s+\d+\s*$/gim, '')     // Remove page markers
+      // .replace(/=+\s*PAGE\s+\d+\s*=+/gi, '')    // Remove page separators
+      .replace(/\n\s*\n\s*\n/g, '\n\n')         // Reduce excessive line breaks
       .trim()
 
-    // 5. LOG MINIMAL IMPROVEMENTS
+    // 8. LOG SPECIFIC IMPROVEMENTS MADE
+    const improvements = []
+    
     if (text !== cleaned) {
-      console.log('Minimal OCR cleaning applied')
+      if (text.includes('**') || text.includes('*')) improvements.push('markdown removal')
+      if (/\bO\b|\bl\b/.test(text)) improvements.push('character substitution')
+      if (/\d\s*,\s*\d/.test(text)) improvements.push('decimal fixes')
+      if (/\s+/.test(text)) improvements.push('spacing normalization')
+      
+      console.log('OCR cleaning improvements applied:', improvements.join(', '))
       console.log('Text length change:', text.length, '->', cleaned.length)
       
-      // Verify we didn't break important data
-      const datesBefore = text.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}/gi) || []
-      const datesAfter = cleaned.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}/gi) || []
-      
-      const terpenesBefore = text.match(/(TERPENE|MYRCENE|LIMONENE|CARYOPHYLLENE)/gi) || []
-      const terpenesAfter = cleaned.match(/(TERPENE|MYRCENE|LIMONENE|CARYOPHYLLENE)/gi) || []
-      
-      console.log('Data preservation check:')
-      console.log('Dates before/after:', datesBefore.length, '/', datesAfter.length)
-      console.log('Terpenes before/after:', terpenesBefore.length, '/', terpenesAfter.length)
-      
-      if (datesAfter.length < datesBefore.length || terpenesAfter.length < terpenesBefore.length) {
-        console.warn('WARNING: Cleaning may have removed important data!')
+      // Show examples of key fixes
+      const thcBefore = text.match(/TH[CG]\s*:?\s*\d+[.,]?\d*\s*[%°º]/gi) || []
+      const thcAfter = cleaned.match(/THC\s*:?\s*\d+\.?\d*%/gi) || []
+      if (thcBefore.length > 0 || thcAfter.length > 0) {
+        console.log('THC pattern improvements:')
+        console.log('Before:', thcBefore.slice(0, 3))
+        console.log('After:', thcAfter.slice(0, 3))
+      }
+
+      const cbdBefore = text.match(/CB[DO]\s*:?\s*\d+[.,]?\d*\s*[%°º]/gi) || []
+      const cbdAfter = cleaned.match(/CBD\s*:?\s*\d+\.?\d*%/gi) || []
+      if (cbdBefore.length > 0 || cbdAfter.length > 0) {
+        console.log('CBD pattern improvements:')
+        console.log('Before:', cbdBefore.slice(0, 3))
+        console.log('After:', cbdAfter.slice(0, 3))
       }
     }
 
@@ -266,25 +324,10 @@ class MistralOCRService {
     if (text.toLowerCase().includes('batch')) confidence += 3
     if (text.toLowerCase().includes('lab')) confidence += 2
 
-    // Enhanced: Check for preserved critical data
-    const hasDateData = /PRODUCED|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC/i.test(text)
-    const hasTerpeneData = /TERPENE|MYRCENE|LIMONENE|CARYOPHYLLENE/i.test(text)
-    const hasTabularData = /\|.*\|/.test(text) // Check if table structure preserved
-    
-    if (hasDateData) confidence += 10
-    if (hasTerpeneData) confidence += 10
-    if (hasTabularData) confidence += 8
-    
-    console.log('Enhanced data presence check:', {
-      dates: hasDateData,
-      terpenes: hasTerpeneData,
-      tables: hasTabularData
-    })
-    
-    // Check for clean cannabinoid patterns
-    const cleanThcPatterns = text.match(/TOTAL\s+THC\s*:?\s*\d+\.?\d*%/gi) || []
-    const cleanCbdPatterns = text.match(/TOTAL\s+CBD\s*:?\s*\d+\.?\d*%/gi) || []
-    const cleanTotalPatterns = text.match(/TOTAL\s+CANNABINOIDS\s*:?\s*\d+\.?\d*%/gi) || []
+    // ENHANCED: Check for clean cannabinoid patterns after our cleaning
+    const cleanThcPatterns = text.match(/TOTAL\s+THC\s*:\s*\d+\.?\d*%/gi) || []
+    const cleanCbdPatterns = text.match(/TOTAL\s+CBD\s*:\s*\d+\.?\d*%/gi) || []
+    const cleanTotalPatterns = text.match(/TOTAL\s+CANNABINOIDS\s*:\s*\d+\.?\d*%/gi) || []
     
     if (cleanThcPatterns.length > 0) confidence += 10
     if (cleanCbdPatterns.length > 0) confidence += 8
@@ -313,10 +356,10 @@ class MistralOCRService {
     // Reduce confidence for potential issues
     if (text.includes('�')) confidence -= 10 // Replacement characters
     
-    // Check for garbled text - be more lenient after minimal cleaning
-    const standardChars = text.match(/[a-zA-Z0-9\s\.\-\%\(\)\:\,\/\n\|]/g) || []
+    // Check for garbled text - be more lenient after cleaning
+    const standardChars = text.match(/[a-zA-Z0-9\s\.\-\%\(\)\:\,\/\n]/g) || []
     const standardRatio = standardChars.length / text.length
-    if (standardRatio < 0.7) confidence -= 15
+    if (standardRatio < 0.75) confidence -= 15 // Slightly more lenient threshold
 
     return Math.min(Math.max(confidence, 35), 95) // Clamp between 35-95
   }
@@ -350,22 +393,21 @@ class MistralOCRService {
   }
 
   private detectTables(text: string): boolean {
-    // Enhanced table detection that accounts for preserved table structure
+    // Enhanced table detection
     const lines = text.split('\n')
     let tableRowCount = 0
     
     for (const line of lines) {
-      // Look for lines with table-like patterns
-      if (line.match(/\|.*\|/) ||                    // Pipe-separated values
-          line.match(/\s+\d+\.\d+\s+/) ||           // Numbers with decimals
-          line.match(/\s+\w+\s+\w+\s+/) ||          // Multiple words spaced
-          line.includes('\t') ||                     // Tab characters
+      // Look for lines with multiple spaced values (table rows)
+      if (line.match(/\s+\d+\.\d+\s+/) || // Numbers with decimals
+          line.match(/\s+\w+\s+\w+\s+/) ||  // Multiple words spaced
+          line.includes('\t') ||             // Tab characters
           line.match(/\d+\.?\d*%\s+\d+\.?\d*\s*(mg|ppm)/)) { // COA-style data rows
         tableRowCount++
       }
     }
     
-    return tableRowCount > 3 // Threshold for table detection
+    return tableRowCount > 3 // Lower threshold since we might have fewer but important rows
   }
 
   async validateApiKey(): Promise<boolean> {
