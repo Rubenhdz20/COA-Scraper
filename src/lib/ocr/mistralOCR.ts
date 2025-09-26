@@ -33,10 +33,12 @@ class MistralOCRService {
   }
 
   async processDocument(filePath: string): Promise<OCRResult> {
+    
     const startTime = Date.now()
 
     try {
       console.log('Starting Mistral OCR processing for:', filePath)
+      
 
       // Validate file exists and size
       const stats = await fs.promises.stat(filePath)
@@ -81,6 +83,14 @@ class MistralOCRService {
 
       console.log('Raw extracted text length:', rawText.length)
       console.log('Raw text preview:', rawText.substring(0, 300) + '...')
+      // In processDocument method, right after extractTextFromResponse
+      console.log('=== DIAGNOSTIC: RAW OCR TEXT ===')
+      console.log('First 2000 characters:')
+      console.log(rawText.substring(0, 2000))
+      console.log('=== SEARCHING FOR MISSING DATA ===')
+      console.log('Date patterns found:', rawText.match(/(PRODUCED|NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*:?\s*\d{1,2}/gi))
+      console.log('Terpene patterns found:', rawText.match(/(TERPENE|MYRCENE|LIMONENE|CARYOPHYLLENE)/gi))
+      console.log('=== END DIAGNOSTIC ===')
 
       // ENHANCED: Apply comprehensive text cleaning for COA documents
       const cleanedText = this.cleanOCRTextForCOA(rawText)
