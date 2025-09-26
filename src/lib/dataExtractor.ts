@@ -180,6 +180,16 @@ function river2SpecificExtraction(text: string): ExtractedData {
   if (result.thcPercentage) result.confidence += 25
   if (result.cbdPercentage !== undefined) result.confidence += 20
   if (result.totalCannabinoids) result.confidence += 20
+
+  // Example in river2SpecificExtraction / structuredPatternExtraction / contextualSearchExtraction
+  if (hasTerpenePanel(text)) {
+    const t = extractTerpenes(text);
+    if (t && t.length > 0) {
+      result.terpenes = t;
+      result.confidence += 10;
+    }
+  }
+
   // Extract test date
   const d = extractTestDate(text)
   if (d) { result.testDate = d; result.confidence += 5 }
@@ -215,9 +225,12 @@ function structuredPatternExtraction(text: string): ExtractedData {
     }
 
     // Look for terpene sections
-    if (/TERPENE/i.test(section)) {
-      result.terpenes = extractTerpenes(section)
-      if (result.terpenes.length > 0) result.confidence += 15
+    if (/TERPENE/i.test(section) && hasTerpenePanel(section)) {
+      const t = extractTerpenes(section)
+      if (t && t.length > 0) {
+        result.terpenes = t
+        result.confidence += 15
+      }
     }
 
     // Try to extract date from this section if we don’t have one yet
@@ -295,9 +308,14 @@ function contextualSearchExtraction(text: string): ExtractedData {
   const d = extractTestDate(text)
   if (d) { result.testDate = d; result.confidence += 5 }
 
-  // Extract terpenes (broad scan)
-  const terps = extractTerpenes(text)
-  if (terps.length > 0) { result.terpenes = terps; result.confidence += 10 }
+  // Extract terpenes (only if a panel exists)
+  if (hasTerpenePanel(text)) {
+    const t = extractTerpenes(text)
+    if (t && t.length > 0) {
+      result.terpenes = t
+      result.confidence += 10
+    }
+  }
 
   return result
 }
@@ -443,8 +461,15 @@ function extractTestDate(text: string): string | undefined {
   return undefined
 }
 
+function hasTerpenePanel(text: string): boolean {
+  return /(TERPENES?\b|TERPENE PROFILE|M[-\s]?0255\b|GC[-\s]?MS\b)/i.test(text);
+}
+
 /** Extract top terpenes (top 3 by %) from a possibly messy block */
 function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
+  if (!hasTerpenePanel(text)) {
+    return []; // no terpene section in this COA
+  }
   // Try to focus on a terpene section if it exists; otherwise use full text
   const section =
     text.match(/(?:TERPENE\S*|M-0255)[\s\S]{0,2000}(?=M-\d+|PAGE|\Z)/i)?.[0] ||
