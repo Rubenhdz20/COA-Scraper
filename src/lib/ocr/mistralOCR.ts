@@ -262,8 +262,8 @@ class MistralOCRService {
 
     // 7. STRUCTURAL IMPROVEMENTS
     cleaned = cleaned
-      .replace(/^\s*PAGE\s+\d+\s*$/gim, '')     // Remove page markers
-      .replace(/=+\s*PAGE\s+\d+\s*=+/gi, '')    // Remove page separators
+      // .replace(/^\s*PAGE\s+\d+\s*$/gim, '')     // Remove page markers
+      // .replace(/=+\s*PAGE\s+\d+\s*=+/gi, '')    // Remove page separators
       .replace(/\n\s*\n\s*\n/g, '\n\n')         // Reduce excessive line breaks
       .trim()
 
