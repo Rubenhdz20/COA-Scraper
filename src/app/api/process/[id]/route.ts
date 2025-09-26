@@ -3,6 +3,70 @@ import { prisma } from '@/lib/prisma'
 import { processPDFWithMistral } from '@/lib/ocr/mistralOCR'
 import { extractDataFromOCRText } from '@/lib/dataExtractor'
 
+// --- Helper: normalize various text dates to full ISO (for Prisma DateTime) ---
+function normalizeTestDate(input?: string | null, fallbackText?: string): string | null {
+  if (!input && !fallbackText) return null
+
+  const monthMap: Record<string, string> = {
+    JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06',
+    JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12'
+  }
+
+  const tryBuildISO = (mon: string, day: string, year: string) => {
+    const m = monthMap[mon.toUpperCase()]
+    if (!m) return null
+    const d = day.padStart(2, '0')
+    return `${year}-${m}-${d}T00:00:00.000Z`
+  }
+
+  // If input is already provided, try to normalize it first
+  if (input) {
+    // Already full ISO?
+    if (/^\d{4}-\d{2}-\d{2}T/.test(input)) return input
+    // YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return `${input}T00:00:00.000Z`
+    // M/D/YYYY or MM/DD/YYYY (or with -)
+    const mdy = input.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+    if (mdy) {
+      const mm = mdy[1].padStart(2, '0')
+      const dd = mdy[2].padStart(2, '0')
+      return `${mdy[3]}-${mm}-${dd}T00:00:00.000Z`
+    }
+    // MON DD, YYYY / MON DD.YYYY / MON DD YYYY
+    const mon = input.match(/([A-Z]{3})\s+(\d{1,2})[,\.\s]+(\d{4})/i)
+    if (mon) return tryBuildISO(mon[1], mon[2], mon[3])
+  }
+
+  // Fall back: scan the raw OCR text for any recognizable date
+  if (fallbackText) {
+    // Labels like PRODUCED / TEST DATE / TESTED
+    const labeled = fallbackText.match(/(?:PRODUCED|TEST\s*DATE|TESTED)\s*:?\s*([A-Z]{3})\s+(\d{1,2})[,\.\s]+(\d{4})/i)
+    if (labeled) return tryBuildISO(labeled[1], labeled[2], labeled[3])
+
+    // Headers like M-#### ... // MON DD.YYYY
+    const header = fallbackText.match(/M-\d+[A-Z]?:[^\/]*\/\/\s*([A-Z]{3})\s+(\d{1,2})[,\.\s]+(\d{4})/i)
+    if (header) return tryBuildISO(header[1], header[2], header[3])
+
+    // Generic MON DD, YYYY
+    const generic = fallbackText.match(/([A-Z]{3})\s+(\d{1,2})[,\.\s]+(\d{4})/i)
+    if (generic) return tryBuildISO(generic[1], generic[2], generic[3])
+
+    // Plain YYYY-MM-DD
+    const isoDateOnly = fallbackText.match(/(\d{4})-(\d{2})-(\d{2})/)
+    if (isoDateOnly) return `${isoDateOnly[1]}-${isoDateOnly[2]}-${isoDateOnly[3]}T00:00:00.000Z`
+
+    // US M/D/YYYY somewhere
+    const mdy2 = fallbackText.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/)
+    if (mdy2) {
+      const mm = mdy2[1].padStart(2, '0')
+      const dd = mdy2[2].padStart(2, '0')
+      return `${mdy2[3]}-${mm}-${dd}T00:00:00.000Z`
+    }
+  }
+
+  return null
+}
+
 // GET handler - Check processing status (keep existing)
 export async function GET(
   request: NextRequest,
@@ -174,9 +238,10 @@ export async function POST(
         console.log('📋 Extracted data summary:', summary)
 
         // Check if we're missing critical cannabinoid data
-        const missingCannabinoids = !extractedData.thcPercentage && 
-                                   extractedData.cbdPercentage === undefined && 
-                                   !extractedData.totalCannabinoids
+        const missingCannabinoids =
+          !extractedData.thcPercentage &&
+          extractedData.cbdPercentage === undefined &&
+          !extractedData.totalCannabinoids
         
         if (missingCannabinoids) {
           console.warn('⚠️  WARNING: No cannabinoid data extracted - this may indicate OCR text quality issues')
@@ -212,22 +277,31 @@ export async function POST(
       
       console.log('📈 Enhanced confidence calculation:', confidenceFactors)
 
+      // --- NEW: normalize date and guard terpenes before saving ---
+      const normalizedISO = normalizeTestDate(extractedData?.testDate, ocrResult?.extractedText)
+      const testDateValue = normalizedISO ? new Date(normalizedISO) : null
+
+      const terpenesValue =
+        Array.isArray(extractedData?.terpenes) && extractedData.terpenes.length > 0
+          ? JSON.stringify(extractedData.terpenes)
+          : null
+
       // Prepare data for database update
       const updateData = {
-        processingStatus: 'completed',
+        processingStatus: 'completed' as const,
         rawText: ocrResult.extractedText,
         ocrProvider: ocrResult.provider,
-        confidence: extractedData.confidence,
-        batchId: extractedData.batchId,
-        strainName: extractedData.strainName,
-        category: extractedData.category,
-        subCategory: extractedData.subCategory,
-        thcPercentage: extractedData.thcPercentage,
-        cbdPercentage: extractedData.cbdPercentage,
-        totalCannabinoids: extractedData.totalCannabinoids,
-        labName: extractedData.labName,
-        testDate: extractedData.testDate,  // Make sure this is included
-        terpenes: JSON.stringify(extractedData.terpenes)  // And this
+        confidence: confidenceFactors.finalConfidence, // use combined score
+        batchId: extractedData.batchId || null,
+        strainName: extractedData.strainName || null,
+        category: extractedData.category || null,
+        subCategory: extractedData.subCategory || null,
+        thcPercentage: extractedData.thcPercentage ?? null,
+        cbdPercentage: extractedData.cbdPercentage ?? null,
+        totalCannabinoids: extractedData.totalCannabinoids ?? null,
+        labName: extractedData.labName || null,
+        testDate: testDateValue,          // <- Date or null (Prisma-safe)
+        terpenes: terpenesValue           // <- null or JSON string
       }
 
       console.log('Saving to database with data:', {
@@ -236,7 +310,9 @@ export async function POST(
         hasCbd: updateData.cbdPercentage !== null,
         hasTotal: !!updateData.totalCannabinoids,
         hasBatch: !!updateData.batchId,
-        hasStrain: !!updateData.strainName
+        hasStrain: !!updateData.strainName,
+        testDateISO: normalizedISO,
+        terpenesCount: extractedData?.terpenes?.length || 0
       })
 
       const updatedDocument = await prisma.coaDocument.update({
@@ -360,15 +436,13 @@ function calculateEnhancedConfidence(
   })
 
   // Enhanced weighted calculation
-  // If we have cannabinoid data, weight extraction confidence higher
-  const hasCannabinoids = extractedData.thcPercentage || 
-                         extractedData.cbdPercentage !== undefined || 
-                         extractedData.totalCannabinoids
+  const hasCannabinoids = extractedData.thcPercentage ||
+                          extractedData.cbdPercentage !== undefined ||
+                          extractedData.totalCannabinoids
 
   let finalConfidence: number
   
   if (hasCannabinoids) {
-    // Good cannabinoid extraction - weight extraction heavily
     finalConfidence = Math.round(
       ocrConfidence * 0.2 +
       extractionConfidence * 0.6 +
@@ -376,7 +450,6 @@ function calculateEnhancedConfidence(
       dataCompleteness * 0.1
     )
   } else {
-    // Poor cannabinoid extraction - don't penalize too heavily if other data is good
     finalConfidence = Math.round(
       ocrConfidence * 0.4 +
       extractionConfidence * 0.3 +
@@ -385,12 +458,10 @@ function calculateEnhancedConfidence(
     )
   }
 
-  // Apply bonuses and penalties
-  if (dataPoints >= 4) finalConfidence += 5 // Bonus for complete data
-  if (!hasCannabinoids) finalConfidence -= 15 // Penalty for missing critical data
-  if (extractedData.batchId && extractedData.strainName) finalConfidence += 5 // Bonus for basic info
+  if (dataPoints >= 4) finalConfidence += 5
+  if (!hasCannabinoids) finalConfidence -= 15
+  if (extractedData.batchId && extractedData.strainName) finalConfidence += 5
 
-  // Clamp the result
   finalConfidence = Math.min(Math.max(finalConfidence, 5), 95)
 
   return {
