@@ -176,6 +176,10 @@ class MistralOCRService {
       .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
       .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
       .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
+      .replace(/β/gi, 'BETA-')
+      .replace(/α/gi, 'ALPHA-')
+      .replace(/γ/gi, 'GAMMA-')
+      .replace(/Δ/gi, 'DELTA-');
 
     // 3) Keep line breaks if they existed in page markdown (helps section slicing)
     cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE') // ensure breaks before page headers
@@ -229,10 +233,12 @@ class MistralOCRService {
 }
 
 let mistralOCRInstance: MistralOCRService | null = null
+
 export function getMistralOCRService(): MistralOCRService {
   if (!mistralOCRInstance) mistralOCRInstance = new MistralOCRService()
   return mistralOCRInstance
 }
+
 export async function processPDFWithMistral(filePath: string): Promise<OCRResult> {
   const service = getMistralOCRService()
   return service.processDocument(filePath)
