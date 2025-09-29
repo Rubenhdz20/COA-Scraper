@@ -198,31 +198,43 @@ class MistralOCRService {
 
   // Stitch text from image-only pages or pages that look like terpene panel
   private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
-    const resp = ocrResponse as any
-    if (!resp?.pages?.length) return currentMarkdown
+  const resp = ocrResponse as any
+  if (!resp?.pages?.length) return currentMarkdown
 
-    let combined = currentMarkdown
+  let combined = currentMarkdown
 
-    for (let i = 0; i < resp.pages.length; i++) {
-      const page = resp.pages[i]
-      const md = page?.markdown || ''
-      const pageHasTerpHeader = this.TERP_HDR.test(md)
-      const looksImageOnly = !/\w{3,}/.test(md) || /^\s*!\[/.test(md)
+  for (let i = 0; i < resp.pages.length; i++) {
+    const page = resp.pages[i]
+    const md = page?.markdown || ''
+    
+    // Check if page is primarily an image
+    const isImagePlaceholder = /^[!\s]*\[img[^\]]*\]\([^)]+\)[!\s]*$/i.test(md.trim())
+    const hasMinimalText = md.trim().length < 150
+    const pageHasTerpHeader = this.TERP_HDR.test(md)
+    const looksImageOnly = !/\w{3,}/.test(md) || isImagePlaceholder
+    
+    // NEW: Also check page number - 2 River terpenes are often on page 2
+    const isPotentialTerpPage = (i === 1 || i === 2) // Pages 2-3 (0-indexed)
 
-      if (looksImageOnly || pageHasTerpHeader) {
-        const imgs = this.pageImageBase64s(page)
-        if (imgs.length) {
-          for (const b64 of imgs) {
-            const imgText = await this.ocrBase64Image(b64)
-            if (imgText && imgText.trim()) {
-              combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
-            }
+    // OCR the page if it's image-only OR a potential terpene page OR has terpene header
+    if (looksImageOnly || pageHasTerpHeader || (isPotentialTerpPage && hasMinimalText)) {
+      const imgs = this.pageImageBase64s(page)
+      if (imgs.length) {
+        console.log(`🖼️  Page ${i + 1} appears to be image-based, running image OCR...`)
+        for (const b64 of imgs) {
+          const imgText = await this.ocrBase64Image(b64)
+          if (imgText && imgText.trim()) {
+            combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
+            console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1} image`)
           }
         }
+      } else {
+        console.log(`⚠️  Page ${i + 1} looks like an image but no image data available`)
       }
     }
-    return combined
   }
+  return combined
+}
 
   // --- Public: main entry ---------------------------------------------------
 
