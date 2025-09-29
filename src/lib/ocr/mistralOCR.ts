@@ -197,48 +197,46 @@ class MistralOCRService {
   }
 
   // Stitch text from image-only pages or pages that look like terpene panel
-private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
-  const resp = ocrResponse as any
-  if (!resp?.pages?.length) return currentMarkdown
+  private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
+    const resp = ocrResponse as any
+    if (!resp?.pages?.length) return currentMarkdown
 
-  let combined = currentMarkdown
+    let combined = currentMarkdown
 
-  for (let i = 0; i < resp.pages.length; i++) {
-    const page = resp.pages[i]
-    const md = page?.markdown || ''
-    
-    // Check if page is primarily an image
-    const isImagePlaceholder = /^[!\s]*\[img[^\]]*\]\([^)]+\)[!\s]*$/i.test(md.trim())
-    const hasMinimalText = md.trim().length < 150
-    const pageHasTerpHeader = this.TERP_HDR.test(md)
-    const looksImageOnly = !/\w{3,}/.test(md) || isImagePlaceholder
-    
-    // FORCE IMAGE OCR FOR ALL PAGES - to ensure we get tables
-    const shouldOCR = true  // Always try image OCR for now
-    
-    if (shouldOCR || looksImageOnly || pageHasTerpHeader) {
-      const imgs = this.pageImageBase64s(page)
-      if (imgs.length > 0) {
-        console.log(`🖼️  Page ${i + 1} has images, running image OCR...`)
-        for (const b64 of imgs) {
-          const imgText = await this.ocrBase64Image(b64)
-          if (imgText && imgText.trim().length > 50) {
-            combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
-            console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1} image`)
+    for (let i = 0; i < resp.pages.length; i++) {
+      const page = resp.pages[i]
+      const md = page?.markdown || ''
+      
+      // Check if page is primarily an image
+      const isImagePlaceholder = /^[!\s]*\[img[^\]]*\]\([^)]+\)[!\s]*$/i.test(md.trim())
+      const hasMinimalText = md.trim().length < 150
+      const pageHasTerpHeader = this.TERP_HDR.test(md)
+      const looksImageOnly = !/\w{3,}/.test(md) || isImagePlaceholder
+      const shouldOCR = isImagePlaceholder || hasMinimalText || looksImageOnly || pageHasTerpHeader
+      
+      if (shouldOCR || looksImageOnly || pageHasTerpHeader) {
+        const imgs = this.pageImageBase64s(page)
+        if (imgs.length > 0) {
+          console.log(`🖼️  Page ${i + 1} has images, running image OCR...`)
+          for (const b64 of imgs) {
+            const imgText = await this.ocrBase64Image(b64)
+            if (imgText && imgText.trim().length > 50) {
+              combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
+              console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1} image`)
+            }
           }
+        } else {
+          console.log(`⚠️  Page ${i + 1} should have images but none found`)
         }
-      } else {
-        console.log(`⚠️  Page ${i + 1} should have images but none found`)
       }
     }
+    
+    if (combined.length > currentMarkdown.length) {
+      console.log(`📊 Image OCR added ${combined.length - currentMarkdown.length} chars`)
+    }
+    
+    return combined
   }
-  
-  if (combined.length > currentMarkdown.length) {
-    console.log(`📊 Image OCR added ${combined.length - currentMarkdown.length} chars`)
-  }
-  
-  return combined
-}
 
   // --- Public: main entry ---------------------------------------------------
 
