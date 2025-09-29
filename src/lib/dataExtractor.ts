@@ -227,7 +227,10 @@ function getExtractionStrategies(labType: string): ExtractionStrategy[] {
 
 function river2SpecificExtraction(text: string): ExtractedData {
   const res: ExtractedData = {
-    confidence: 40, labName: "2 RIVER LABS, INC", category: "INHALABLE", extractionMethod: "2river_specific"
+    confidence: 40, 
+    labName: "2 RIVER LABS, INC", 
+    category: "INHALABLE", 
+    extractionMethod: "2river_specific"
   }
   const clean = text.replace(/\s+/g, ' ').trim()
 
@@ -251,12 +254,31 @@ function river2SpecificExtraction(text: string): ExtractedData {
   const iso = extractTestDateISO(text)
   if (iso) { res.testDate = iso; res.confidence += 5 }
 
-  // ✅ Terpenes: call right before returning, only if a panel exists
+  // ✅ ENHANCED TERPENE EXTRACTION
   if (hasTerpenePanel(text)) {
-    const terpList = extractTerpenes(text)           // your table-aware parser
-    res.terpenes = terpList.slice(0, 3)              // keep top 3
-    console.log('2river terpenes:', terpList)
-    if (terpList.length > 0) res.confidence += 8     // small boost only if found
+    console.log('🌿 Attempting 2River-specific terpene extraction...')
+    const terpPanel = findTerpenePanel(text)
+    
+    if (terpPanel) {
+      // Try the enhanced extractor first
+      let terpList = extractTerpenesFrom2RiverPanel(terpPanel)
+      
+      // If still empty, try the loose text scraper as fallback
+      if (terpList.length === 0 && typeof extractTerpenesFromLooseText === 'function') {
+        console.log('⚠️  Panel extraction failed, trying loose text scraper...')
+        terpList = extractTerpenesFromLooseText(terpPanel)
+      }
+      
+      // Keep only top 3
+      res.terpenes = terpList.slice(0, 3)
+      console.log('2river terpenes extracted:', res.terpenes)
+      
+      if (terpList.length > 0) {
+        res.confidence += 8
+      }
+    } else {
+      console.log('⚠️  Terpene panel detected but could not slice it')
+    }
   }
 
   return res
@@ -587,6 +609,7 @@ const PIPE_ROW =
  * @param {string} text - The full OCR text.
  * @returns {string | null} The sliced text or null.
  */
+
 function getTerpenePanelSlice(text: string): string | null {
   // capture from the terpene header to the next page/header
   const m = text.match(
@@ -602,6 +625,7 @@ function getTerpenePanelSlice(text: string): string | null {
  * @param {string} panel - The text slice containing the terpene panel.
  * @returns {Array<{ name: string; percentage: number }>} An array of the top 3 terpenes found.
  */
+
 function extractTerpenesFromPanel(panel: string): Array<{ name: string; percentage: number }> {
   const out: Array<{ name: string; percentage: number }> = [];
   const seen = new Map<string, number>();
@@ -644,6 +668,130 @@ function extractTerpenesFromPanel(panel: string): Array<{ name: string; percenta
   // sort desc and take top 3
   out.sort((a, b) => b.percentage - a.percentage);
   return out.slice(0, 3);
+}
+
+function extractTerpenesFrom2RiverPanel(panel: string): Array<{ name: string; percentage: number }> {
+  const results: Map<string, number> = new Map()
+  
+  console.log('=== ENHANCED 2RIVER TERPENE EXTRACTION ===')
+  console.log('Panel length:', panel.length)
+  console.log('Panel preview (first 800 chars):\n', panel.substring(0, 800))
+  
+  // Known 2 River terpene names (from your image)
+  const KNOWN_TERPENES = [
+    'D-LIMONENE', 'BETA-MYRCENE', 'BETA-CARYOPHYLLENE', 'LINALOOL',
+    'ALPHA-HUMULENE', 'TRANS-NEROLIDOL', 'BETA-PINENE', 'ALPHA-PINENE',
+    'ALPHA-BISABOLOL', 'CAMPHENE', 'CARYOPHYLLENE OXIDE', 'DELTA-3-CARENE',
+    'EUCALYPTOL', 'GERANIOL', 'TERPINOLENE', 'ALPHA-TERPINENE',
+    'BETA-OCIMENE', 'CIS-NEROLIDOL', 'CIS-OCIMENE', 'GAMMA-TERPINENE',
+    'P-CYMENE', 'TRANS-OCIMENE', 'GUAIOL', 'ISOPULEGOL'
+  ]
+
+  const lines = panel.split('\n')
+  
+  // Strategy 1: Look for lines with terpene name followed by percentage
+  // Format: "D-LIMONENE    0.514 %   5.14 mg/g   0.124/0.373   N/A"
+  for (const line of lines) {
+    // Skip header rows and non-data lines
+    if (/ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL|TOTAL TERPENES/i.test(line)) continue
+    if (line.trim().length < 10) continue
+    
+    // Try to match: terpene name + percentage
+    // Handle both "0.514 %" and "0.514%" formats
+    const match = line.match(/([A-Z][A-Z0-9\-\s]+?)\s+(\d+\.?\d*)\s*%/i)
+    
+    if (match) {
+      const rawName = match[1].trim()
+      const percentage = parseFloat(match[2])
+      
+      // Normalize the name and check if it's a known terpene
+      const normalizedName = normalizeTerpName(rawName)
+      
+      // Only accept if it's a known terpene and valid percentage
+      if (percentage > 0 && percentage < 20) {
+        const isKnown = KNOWN_TERPENES.some(kt => 
+          normalizedName.toUpperCase().includes(kt) || 
+          kt.includes(normalizedName.toUpperCase())
+        )
+        
+        if (isKnown) {
+          console.log(`✅ Found: ${normalizedName} = ${percentage}%`)
+          results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
+        }
+      }
+    }
+  }
+  
+  // Strategy 2: If no results, try looking for mg/g values and convert to %
+  if (results.size === 0) {
+    console.log('⚠️  No % values found, trying mg/g conversion...')
+    
+    for (const line of lines) {
+      if (/ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL|TOTAL TERPENES/i.test(line)) continue
+      
+      // Match: terpene name + mg/g value
+      // Format: "D-LIMONENE    5.14 mg/g"
+      const match = line.match(/([A-Z][A-Z0-9\-\s]+?)\s+(\d+\.?\d*)\s*mg\/g/i)
+      
+      if (match) {
+        const rawName = match[1].trim()
+        const mgPerG = parseFloat(match[2])
+        const percentage = mgPerG * 0.1 // Convert mg/g to %
+        
+        const normalizedName = normalizeTerpName(rawName)
+        
+        if (percentage > 0 && percentage < 20) {
+          const isKnown = KNOWN_TERPENES.some(kt => 
+            normalizedName.toUpperCase().includes(kt) || 
+            kt.includes(normalizedName.toUpperCase())
+          )
+          
+          if (isKnown) {
+            console.log(`✅ Found (mg/g): ${normalizedName} = ${percentage}%`)
+            results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
+          }
+        }
+      }
+    }
+  }
+  
+  // Strategy 3: Ultra-loose fallback - look for ANY terpene name near ANY number
+  if (results.size === 0) {
+    console.log('⚠️  Still no results, trying loose pattern matching...')
+    
+    const text = panel.toLowerCase()
+    
+    for (const terpName of KNOWN_TERPENES.slice(0, 10)) { // Just check top 10 common ones
+      const searchName = terpName.toLowerCase().replace(/-/g, '[\\s-]?')
+      const regex = new RegExp(`${searchName}[^\\n]{0,80}?(\\d+\\.\\d+)\\s*(%|mg\\/g)`, 'i')
+      const match = text.match(regex)
+      
+      if (match) {
+        let percentage = parseFloat(match[1])
+        if (match[2].toLowerCase().includes('mg')) {
+          percentage *= 0.1
+        }
+        
+        if (percentage > 0 && percentage < 20) {
+          const normalizedName = normalizeTerpName(terpName)
+          console.log(`✅ Found (loose): ${normalizedName} = ${percentage}%`)
+          results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
+        }
+      }
+    }
+  }
+  
+  // Convert to array and sort by percentage
+  const terpenes = Array.from(results.entries())
+    .map(([name, percentage]) => ({ name, percentage }))
+    .sort((a, b) => b.percentage - a.percentage)
+    .slice(0, 3) // Top 3 only
+  
+  console.log('=== FINAL TERPENE RESULTS ===')
+  console.log('Total found:', terpenes.length)
+  terpenes.forEach((t, i) => console.log(`${i + 1}. ${t.name}: ${t.percentage}%`))
+  
+  return terpenes
 }
 
 // ----------------- Terpene panel parsing -----------------

@@ -86,13 +86,12 @@ class MistralOCRService {
       .replace(/`(.*?)`/g, '$1')
       .replace(/\[(.*?)\]\(.*?\)/g, '$1')
 
-    // 2) Character / number fixes (preserve \n)
+    // 2) Character / number fixes
     cleaned = cleaned
       .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')            // 24,2 -> 24.2
       .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')            // 24;2 -> 24.2
       .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')     // 24 2% -> 24.2%
       .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')          // unify percent
-      .replace(/[^\S\r\n]+/g, ' ')                      // normalize spaces (keep \n)
       .replace(/TH[CG]/gi, 'THC')
       .replace(/CB[DO]/gi, 'CBD')
       .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
@@ -103,7 +102,14 @@ class MistralOCRService {
       .replace(/γ/gi, 'GAMMA-')
       .replace(/Δ/gi, 'DELTA-')
 
-    // 3) Ensure breaks before page headers to help slicing
+    // 3) CRITICAL: Only normalize EXCESSIVE whitespace (3+ spaces/tabs)
+    // This preserves table alignment while cleaning up messy text
+    cleaned = cleaned
+      .replace(/[ \t]{3,}/g, '  ')  // 3+ spaces -> 2 spaces (preserves columns)
+      .replace(/\r\n/g, '\n')        // normalize line endings
+      .replace(/\n{3,}/g, '\n\n')    // max 2 consecutive newlines
+
+    // 4) Ensure breaks before page headers to help slicing
     cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE')
 
     return cleaned.trim()
