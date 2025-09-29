@@ -267,13 +267,15 @@ class MistralOCRService {
         throw new Error('No text could be extracted from the document')
       }
 
-      console.log('=== RAW OCR OUTPUT (terpene section, BEFORE cleaning) ===')
+      console.log('🔍 CHECKING RAW OCR FOR TERPENES...')
       const rawTerpIdx = rawText.search(this.TERP_HDR)
+      console.log('Raw terpene header index:', rawTerpIdx)
       if (rawTerpIdx >= 0) {
+        console.log('=== RAW OCR TERPENE SECTION (BEFORE CLEANING) ===')
         console.log(rawText.substring(rawTerpIdx, rawTerpIdx + 1500))
         console.log('=== END RAW SECTION ===')
       } else {
-        console.log('❌ No terpene header found in RAW OCR response')
+        console.log('❌ No terpene header in raw OCR')
       }
 
       console.log('Raw extracted text length:', rawText.length)
