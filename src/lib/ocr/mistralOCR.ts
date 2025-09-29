@@ -16,24 +16,6 @@ export interface OCRResult {
   }
 }
 
-import { Mistral } from '@mistralai/mistralai'
-import fs from 'fs'
-
-export interface OCRResult {
-  success: boolean
-  extractedText: string
-  confidence?: number
-  processingTime: number
-  provider: string
-  error?: string
-  metadata?: {
-    pageCount?: number
-    language?: string
-    hasImages?: boolean
-    hasTables?: boolean
-  }
-}
-
 class MistralOCRService {
   private client: Mistral
   private readonly maxFileSize: number
