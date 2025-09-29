@@ -1,3 +1,8 @@
+/**
+ * @interface ExtractedData
+ * @description Defines the shape of the final structured data object that will be returned after parsing the OCR text.
+ * It includes all the key information expected from a Certificate of Analysis (COA).
+ */
 interface ExtractedData {
   batchId?: string
   strainName?: string
@@ -13,26 +18,53 @@ interface ExtractedData {
   extractionMethod?: string
 }
 
+/**
+ * @interface MistralExtractionResponse
+ * @description Defines the expected structure of a response from the Mistral AI API, specifically for chat completion.
+ * This is used if a Large Language Model (LLM) is used for extraction.
+ */
 interface MistralExtractionResponse {
   choices: Array<{ message: { content: string } }>
 }
 
+/**
+ * @interface ExtractionStrategy
+ * @description Represents a single method or approach for extracting data from the OCR text.
+ * Each strategy has a name and an `extract` function that implements its logic.
+ */
 interface ExtractionStrategy {
   name: string
   extract: (text: string) => ExtractedData
 }
+
+
+//
+// MAIN ORCHESTRATOR
+//
+
+/**
+ * @function extractDataFromOCRText
+ * @description The main function that orchestrates the entire data extraction process.
+ * It takes raw OCR text, detects the lab that produced the COA, runs a series of extraction strategies,
+ * merges the results, and performs final cleanup and enrichment (like parsing terpenes) to produce a single, structured data object.
+ * @param {string} ocrText - The raw text extracted from the document by an OCR service.
+ * @returns {Promise<ExtractedData>} A promise that resolves to the final, structured data.
+ */
 
 export async function extractDataFromOCRText(ocrText: string): Promise<ExtractedData> {
   try {
     console.log('Starting COA data extraction')
     console.log('Text length:', ocrText.length)
 
+    // 1. Detect the lab source to apply lab-specific logic.
     const labType = detectLabType(ocrText)
     console.log('Detected lab type:', labType)
 
+    // 2. Get a list of extraction strategies, including a specific one if the lab is known.
     const strategies = getExtractionStrategies(labType)
     console.log('Using strategies:', strategies.map(s => s.name))
 
+    // 3. Execute each strategy and collect the results.
     const results: ExtractedData[] = []
     for (const strategy of strategies) {
       console.log(`\nExecuting strategy: ${strategy.name}`)
@@ -46,24 +78,28 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
         terps: result.terpenes?.length || 0,
         confidence: result.confidence
       })
+      // Optimization: If a strategy returns a high-confidence, complete result, stop early.
       if (result.confidence >= 85 && hasCompleteDataLite(result)) {
         console.log('High confidence result found, stopping early')
         break
       }
     }
 
-    // Merge strategy results
+    // 4. Combine the results from all strategies into a single, more accurate object.
     const finalResult = combineResults(results, labType)
 
-    // --- TERPENES: only try if a panel exists, and don't overwrite non-empty arrays ---
+    // 5. TERPENE EXTRACTION: A dedicated, multi-step process to find and parse terpenes.
+    // This is done after the main strategies because it's complex and can be handled separately.
     if (!finalResult.terpenes || finalResult.terpenes.length === 0) {
+      // First, try to find a specific "terpene panel" section in the text.
       const terpPanel = findTerpenePanel(ocrText) // your helper that slices the "TERPENES BY GC-FID" section
       if (terpPanel) {
         console.log('✅ Terpene panel detected. Preview:', terpPanel.substring(0, 220))
+        // If a panel is found, use a robust parser designed for table-like structures.
         let terps = extractTerpenesFromPanel(terpPanel) // your robust table-aware parser
         console.log('Parsed terpene candidates (panel):', terps)
 
-        // Fallback: loose text scrape if table parser returned nothing
+        // If the table parser fails, fall back to a more general "loose text" scraper.
         if (!terps || terps.length === 0) {
           if (typeof extractTerpenesFromLooseText === 'function') {
             terps = extractTerpenesFromLooseText(terpPanel)
@@ -74,12 +110,12 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
         }
 
         if (terps && terps.length) {
-          // Sort desc and keep top 3
+          // If terpenes were found, sort them by percentage and keep the top 3.
           finalResult.terpenes = terps
             .sort((a, b) => b.percentage - a.percentage)
             .slice(0, 3)
 
-          // Small confidence nudge
+          // Give a small boost to the confidence score for successfully finding terpenes.
           finalResult.confidence = Math.min((finalResult.confidence || 0) + 8, 95)
           console.log('🌿 Top terpenes saved:', finalResult.terpenes)
         } else {
@@ -93,7 +129,7 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
     }
     // --- END TERPENES ---
 
-    // Try test date (2River styles) if missing
+    // 6. Final check for a test date if it wasn't found by other strategies.
     if (!finalResult.testDate) {
       const iso = extractTestDateISO(ocrText)
       if (iso) {
@@ -118,11 +154,24 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
 
   } catch (error) {
     console.error('Extraction failed:', error)
+    // In case of a major error, return a low-confidence object with any info we have.
     return { confidence: 10, labName: detectLabName(ocrText) || "UNKNOWN LAB" }
   }
 }
 
-// ----------------- Lab detection -----------------
+//
+// LAB & STRATEGY DEFINITION
+//
+
+/**
+ * @function detectLabType
+ * @description Identifies the lab that produced the COA using simple regular expressions.
+ * This allows for the use of lab-specific parsing logic.
+ * @param {string} text - The OCR text.
+ * @returns {string} A short identifier for the lab (e.g., '2river') or 'generic'.
+ */
+
+
 function detectLabType(text: string): string {
   if (/2\s*RIVER\s*LABS/i.test(text)) return '2river'
   if (/SC\s*LABS/i.test(text)) return 'sclabs'
@@ -130,24 +179,52 @@ function detectLabType(text: string): string {
   return 'generic'
 }
 
+/**
+ * @function detectLabName
+ * @description Extracts the full name of the lab from the text.
+ * @param {string} text - The OCR text.
+ * @returns {string | null} The full lab name or null if not found.
+ */
+
+
 function detectLabName(text: string): string | null {
   const labs = [/2\s*RIVER\s*LABS[^,\n]*/i, /SC\s*LABS[^,\n]*/i, /STEEP\s*HILL[^,\n]*/i]
   for (const p of labs) { const m = text.match(p); if (m) return m[0].trim() }
   return null
 }
 
-// ----------------- Strategy factory -----------------
+/**
+ * @function getExtractionStrategies
+ * @description A factory function that returns an array of extraction strategies to be used.
+ * It includes a set of base strategies and prepends a lab-specific strategy if applicable.
+ * @param {string} labType - The identifier for the detected lab.
+ * @returns {ExtractionStrategy[]} An array of strategy objects.
+ */
+
 function getExtractionStrategies(labType: string): ExtractionStrategy[] {
   const base: ExtractionStrategy[] = [
     { name: 'structured_pattern', extract: structuredPatternExtraction },
     { name: 'numerical_analysis', extract: numericalAnalysisExtraction },
     { name: 'contextual_search', extract: contextualSearchExtraction }
   ]
+  // If the lab is '2river', add its specific strategy to the front of the list to run first.
   if (labType === '2river') base.unshift({ name: '2river_specific', extract: river2SpecificExtraction })
   return base
 }
 
-// ----------------- Strategies -----------------
+//
+// EXTRACTION STRATEGIES
+//
+
+/**
+ * @function river2SpecificExtraction
+ * @description A strategy tailored specifically for COAs from "2 River Labs".
+ * It uses regex patterns that match the known layout and wording of their reports.
+ * @param {string} text - The OCR text.
+ * @returns {ExtractedData} The data extracted by this strategy.
+ */
+
+
 function river2SpecificExtraction(text: string): ExtractedData {
   const res: ExtractedData = {
     confidence: 40, labName: "2 RIVER LABS, INC", category: "INHALABLE", extractionMethod: "2river_specific"
@@ -185,10 +262,24 @@ function river2SpecificExtraction(text: string): ExtractedData {
   return res
 }
 
-// Simple panel check (put near helpers)
+/**
+ * @function hasTerpenePanel
+ * @description A simple helper to quickly check if the text likely contains a terpene panel.
+ * @param {string} s - The OCR text.
+ * @returns {boolean} True if a terpene panel header is found.
+ */
 function hasTerpenePanel(s: string): boolean {
   return /M-0255[^:\n]*:\s*TERPENES?/i.test(s) || /TERPENES?\s+BY\s+GC/i.test(s)
 }
+
+/**
+ * @function structuredPatternExtraction
+ * @description A strategy that splits the document into sections and looks for cannabinoid data
+ * within sections labeled "POTENCY" or "CANNABINOID".
+ * @param {string} text - The OCR text.
+ * @returns {ExtractedData} The data extracted by this strategy.
+ */
+
 
 function structuredPatternExtraction(text: string): ExtractedData {
   const res: ExtractedData = { confidence: 30, extractionMethod: "structured_pattern" }
@@ -209,6 +300,16 @@ function structuredPatternExtraction(text: string): ExtractedData {
   return res
 }
 
+
+
+/**
+ * @function numericalAnalysisExtraction
+ * @description A general-purpose strategy that finds all decimal numbers in the text and assumes they
+ * are THC, CBD, or Total Cannabinoids based on whether they fall within a plausible range.
+ * This is a "best guess" approach when other methods fail.
+ * @param {string} text - The OCR text.
+ * @returns {ExtractedData} The data extracted by this strategy.
+ */
 function numericalAnalysisExtraction(text: string): ExtractedData {
   const res: ExtractedData = { confidence: 25, extractionMethod: "numerical_analysis" }
   const nums = text.match(/\d+\.\d+/g) || []
@@ -225,6 +326,13 @@ function numericalAnalysisExtraction(text: string): ExtractedData {
   return res
 }
 
+/**
+ * @function contextualSearchExtraction
+ * @description A strategy that searches for keywords (like 'THC', 'CBD') and then looks for a
+ * numerical percentage value within a small window of text around that keyword.
+ * @param {string} text - The OCR text.
+ * @returns {ExtractedData} The data extracted by this strategy.
+ */
 function contextualSearchExtraction(text: string): ExtractedData {
   const res: ExtractedData = { confidence: 20, extractionMethod: "contextual_search" }
   const windows = [{ k: 'THC', f: 'thcPercentage' }, { k: 'CBD', f: 'cbdPercentage' }, { k: 'CANNABINOID', f: 'totalCannabinoids' }]
@@ -237,7 +345,19 @@ function contextualSearchExtraction(text: string): ExtractedData {
   return res
 }
 
+//
+// HELPER FUNCTIONS
+//
+
 // ----------------- Date helpers -----------------
+
+/**
+ * @function extractTestDateISO
+ * @description Finds and parses a date from the text using various regex patterns.
+ * It handles different date formats and converts the found date into a standardized ISO 8601 string.
+ * @param {string} text - The OCR text.
+ * @returns {string | undefined} The formatted date string or undefined if not found.
+ */
 function extractTestDateISO(text: string): string | undefined {
   const monthMap: Record<string,string> =
     { JAN:'01', FEB:'02', MAR:'03', APR:'04', MAY:'05', JUN:'06', JUL:'07', AUG:'08', SEP:'09', OCT:'10', NOV:'11', DEC:'12' }
@@ -261,6 +381,12 @@ function extractTestDateISO(text: string): string | undefined {
   return undefined
 }
 
+/**
+ * @function normalizeChemText
+ * @description Cleans up chemical names by replacing common unicode characters and standardizing Greek letters.
+ * @param {string} s - The raw chemical name string.
+ * @returns {string} The normalized string.
+ */
 function normalizeChemText(s: string): string {
   return s
     .replace(/[\u2010-\u2015]/g, '-') // unicode dashes → -
@@ -271,7 +397,15 @@ function normalizeChemText(s: string): string {
     .replace(/Δ/gi, 'DELTA-');
 }
 
-// Convert an "AMT" token to % given optional unit
+/**
+ * @function amtTokenToPercent
+ * @description Converts a value string (e.g., "5.1") into a percentage, considering its unit (e.g., 'mg/g').
+ * @param {string} token - The string containing the numerical value.
+ * @param {string} [unit] - The unit of the value (e.g., '%', 'mg/g').
+ * @returns {number | null} The value as a percentage, or null if invalid.
+ */
+
+
 function amtTokenToPercent(token: string, unit?: string): number | null {
   if (!token) return null
   const raw = token.replace(/[^\d.<]/g, '').trim()
@@ -291,13 +425,28 @@ function amtTokenToPercent(token: string, unit?: string): number | null {
   return val
 }
 
-// Parse AMT unit from a header string like "AMT (%)" or "AMT (mg/g)"
+/**
+ * @function headerUnit
+ * @description Parses the unit from a table header string (e.g., "AMT (%)").
+ * @param {string} header - The header text.
+ * @returns {string | undefined} The unit found, or undefined.
+ */
+
+
 function headerUnit(header: string): string | undefined {
   const m = header.match(/\(\s*([%μµu]g\/g|mg\/g|%)\s*\)/i)
   return m ? m[1] : undefined
 }
 
-// Core terpene parser that can handle markdown tables and plain lines
+/**
+ * @function extractTerpenes
+ * @description A comprehensive terpene parser that handles both markdown tables and plain text lines.
+ * It identifies terpene names and their corresponding percentage values.
+ * @param {string} text - The OCR text, ideally a slice containing just the terpene panel.
+ * @returns {Array<{ name: string; percentage: number }>} An array of found terpenes, sorted by percentage.
+ */
+
+
 export function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
   const out: Record<string, number> = {}
 
@@ -388,7 +537,15 @@ export function extractTerpenes(text: string): Array<{ name: string; percentage:
   return arr
 }
 
-// Try to slice just the terpene panel area to improve precision
+/**
+ * @function sliceTerpenePanel
+ * @description Tries to find and return only the portion of the text that contains the terpene analysis,
+ * improving the precision of the terpene parser.
+ * @param {string} text - The full OCR text.
+ * @returns {string | null} A slice of the text containing the terpene panel, or null.
+ */
+
+
 function sliceTerpenePanel(text: string): string | null {
   // Look for common headers
   const idx =
@@ -410,14 +567,26 @@ function sliceTerpenePanel(text: string): string | null {
   return panel
 }
 
-// strict “row” detector: needs a % on the line (no ND / < LOQ)
+/**
+ * @constant ROW_WITH_PERCENT
+ * @description A regex to detect a line that looks like a whitespace-separated table row containing a percentage.
+ */
 const ROW_WITH_PERCENT =
   /^\s*([A-Z0-9α-ωβγΔ\-\s\.]+?)\s+(?:AMT:?\s*)?(\d+(?:\.\d+)?)\s*%\b/i;
 
-// same line but with columns: NAME | AMT | AMT | ...
+/**
+ * @constant PIPE_ROW
+ * @description A regex to detect a line that looks like a pipe-separated markdown table row.
+ */
 const PIPE_ROW =
   /^\s*([A-Z0-9α-ωβγΔ\-\s\.]+?)\s*\|\s*(?:ND|<\s*LOQ|(\d+(?:\.\d+)?)\s*%)\b/i;
 
+/**
+ * @function getTerpenePanelSlice
+ * @description An alternative function to find and slice the terpene panel from the text.
+ * @param {string} text - The full OCR text.
+ * @returns {string | null} The sliced text or null.
+ */
 function getTerpenePanelSlice(text: string): string | null {
   // capture from the terpene header to the next page/header
   const m = text.match(
@@ -426,7 +595,13 @@ function getTerpenePanelSlice(text: string): string | null {
   return m ? m[0] : null;
 }
 
-// --- core parser ---
+/**
+ * @function extractTerpenesFromPanel
+ * @description A core parser for extracting terpenes from a pre-sliced panel. It iterates through lines,
+ * attempting to match either pipe-style or whitespace-style table rows to find terpene names and values.
+ * @param {string} panel - The text slice containing the terpene panel.
+ * @returns {Array<{ name: string; percentage: number }>} An array of the top 3 terpenes found.
+ */
 function extractTerpenesFromPanel(panel: string): Array<{ name: string; percentage: number }> {
   const out: Array<{ name: string; percentage: number }> = [];
   const seen = new Map<string, number>();
@@ -473,7 +648,12 @@ function extractTerpenesFromPanel(panel: string): Array<{ name: string; percenta
 
 // ----------------- Terpene panel parsing -----------------
 
-// Find the terpene panel slice to parse (M-0255: TERPENES BY GC-FID)
+/**
+ * @function findTerpenePanel
+ * @description A robust function to find the terpene panel using multiple common headers.
+ * @param {string} text - The full OCR text.
+ * @returns {string | null} The sliced text of the panel or null.
+ */
 function findTerpenePanel(text: string): string | null {
   // Try to capture from the terpene header up to the next "M-" section or next page
   const m = text.match(/(M-0?255[^]*?)(?=(?:\nM-\d{3}|\n=== PAGE|\n#\s+REGULATORY|$))/i)
@@ -494,7 +674,15 @@ function findTerpenePanel(text: string): string | null {
   return null
 }
 
-// Normalize names like "β-MYRCENE" → "Myrcene"
+/**
+ * @function normalizeTerpName
+ * @description Standardizes terpene names by cleaning them, handling prefixes (like 'β-'),
+ * and mapping common variations to a canonical name (e.g., 'beta-myrcene' -> 'Myrcene').
+ * @param {string} raw - The raw terpene name from the text.
+ * @returns {string} The standardized terpene name.
+ */
+
+
 function normalizeTerpName(raw: string): string {
   const n = raw
     .replace(/β|&beta;|BETA/gi, 'Beta-')
@@ -526,7 +714,15 @@ function normalizeTerpName(raw: string): string {
   return map[n] || n.replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// Parse AMT column values; handle %, mg/g, ND, < LOQ
+/**
+ * @function parseAmtToPercent
+ * @description Parses a string that represents an amount and converts it to a percentage.
+ * It handles different formats like '0.514 %', '5.14 mg/g', 'ND', and '< LOQ'.
+ * @param {string} amt - The amount string.
+ * @returns {number | null} The value as a percentage or null if not parsable.
+ */
+
+
 function parseAmtToPercent(amt: string): number | null {
   if (!amt) return null
   const s = amt.trim().toUpperCase()
@@ -546,8 +742,15 @@ function parseAmtToPercent(amt: string): number | null {
   return null
 }
 
-// -------- Loose fallback terpene scraper --------
-// Use when extractTerpenesFromPanel(panel) returns [].
+/**
+ * @function extractTerpenesFromLooseText
+ * @description A fallback scraper for terpenes used when a structured panel cannot be parsed.
+ * It scans the text for known terpene names and then looks for a numerical value nearby.
+ * This is less precise but effective as a backup.
+ * @param {string} text - The text to scrape.
+ * @returns {Array<{ name: string; percentage: number }>} An array of found terpenes.
+ */
+
 
 function extractTerpenesFromLooseText(text: string): Array<{ name: string; percentage: number }> {
   // 1) Normalize text so names are detectable
@@ -646,8 +849,17 @@ function extractTerpenesFromLooseText(text: string): Array<{ name: string; perce
   return arr.slice(0, 5);
 }
 
-
 // ----------------- Cannabinoid helpers -----------------
+
+/**
+ * @function extractCannabinoidValue
+ * @description Finds a cannabinoid value using a series of regex patterns.
+ * @param {string} text - The OCR text.
+ * @param {string} cannabinoidType - The type of cannabinoid to look for (e.g., 'THC').
+ * @returns {number | undefined} The found value or undefined.
+ */
+
+
 function extractCannabinoidValue(text: string, cannabinoidType: string): number | undefined {
   const patterns = [
     new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:?\\s*(\\d+\\.?\\d*)\\s*%`, 'i'),
@@ -664,6 +876,16 @@ function extractCannabinoidValue(text: string, cannabinoidType: string): number 
   return undefined
 }
 
+/**
+ * @function isValidCannabinoidValue
+ * @description Checks if a given value is a plausible percentage for a given cannabinoid type.
+ * This helps filter out incorrect matches.
+ * @param {number} value - The numerical value.
+ * @param {string} type - The cannabinoid type.
+ * @returns {boolean} True if the value is valid.
+*/
+
+
 function isValidCannabinoidValue(value: number, type: string): boolean {
   if (!isFinite(value) || value < 0) return false
   switch (type.toUpperCase()) {
@@ -673,6 +895,14 @@ function isValidCannabinoidValue(value: number, type: string): boolean {
     default: return value <= 100
   }
 }
+
+/**
+ * @function parseStructuredCannabinoids
+ * @description Parses cannabinoid values from a section of text that is known to contain them.
+ * @param {string} section - The text slice of the cannabinoid section.
+ * @returns {object} An object containing the found thc, cbd, and total values.
+ */
+
 
 function parseStructuredCannabinoids(section: string): { thc?: number, cbd?: number, total?: number } {
   const out: any = {}
@@ -684,6 +914,16 @@ function parseStructuredCannabinoids(section: string): { thc?: number, cbd?: num
   }
   return out
 }
+
+/**
+ * @function findValueInContext
+ * @description A helper for the contextual search strategy. Finds a keyword and then looks for a percentage value nearby.
+ * @param {string} text - The full OCR text.
+ * @param {string} keyword - The keyword to search for.
+ * @param {number} [windowSize=100] - The number of characters to look around the keyword.
+ * @returns {number | undefined} The found value or undefined.
+ */
+
 
 function findValueInContext(text: string, keyword: string, windowSize = 100): number | undefined {
   const re = new RegExp(keyword, 'gi')
@@ -702,15 +942,38 @@ function findValueInContext(text: string, keyword: string, windowSize = 100): nu
 }
 
 // ----------------- Merge & scoring -----------------
+
+/**
+ * @function hasCompleteDataLite
+ * @description A quick check to see if the most important data points (THC and Total Cannabinoids) have been found.
+ * Used to decide if the extraction process can stop early.
+ * @param {ExtractedData} r - A data result object.
+ * @returns {boolean} True if the essential data is present.
+ */
+
+
 function hasCompleteDataLite(r: ExtractedData): boolean {
   return !!(r.thcPercentage != null && r.totalCannabinoids != null)
 }
 
+/**
+ * @function combineResults
+ * @description Merges the results from multiple extraction strategies into a single, more reliable object.
+ * It prioritizes the result with the highest initial confidence and then fills in any missing fields from other results.
+ * It also recalculates a final confidence score based on the completeness of the merged data.
+ * @param {ExtractedData[]} results - An array of result objects from the strategies.
+ * @param {string} labType - The detected lab type, used for final enrichment.
+ * @returns {ExtractedData} The final, merged data object.
+ */
+
+
 function combineResults(results: ExtractedData[], labType: string): ExtractedData {
   if (!results.length) return { confidence: 10, labName: "UNKNOWN LAB" }
+  // Start with the result that has the highest confidence score.
   const sorted = results.sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
   const base: ExtractedData = { ...sorted[0] }
 
+  // Iterate through the other results and fill in any missing data.
   for (const r of sorted.slice(1)) {
     if (!base.batchId && r.batchId) base.batchId = r.batchId
     if (!base.strainName && r.strainName) base.strainName = r.strainName
@@ -721,6 +984,7 @@ function combineResults(results: ExtractedData[], labType: string): ExtractedDat
     if ((!base.terpenes || base.terpenes.length === 0) && r.terpenes) base.terpenes = r.terpenes
   }
 
+  // Recalculate the confidence score based on how complete the final object is.
   let conf = base.confidence || 10
   if (base.batchId) conf += 5
   if (base.strainName) conf += 5
@@ -733,6 +997,7 @@ function combineResults(results: ExtractedData[], labType: string): ExtractedDat
 
   base.confidence = Math.min(conf, 95)
 
+  // Add any final, lab-specific default values.
   if (labType === '2river') {
     base.labName = base.labName || "2 RIVER LABS, INC"
     base.category = base.category || "INHALABLE"

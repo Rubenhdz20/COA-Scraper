@@ -16,10 +16,32 @@ export interface OCRResult {
   }
 }
 
+import { Mistral } from '@mistralai/mistralai'
+import fs from 'fs'
+
+export interface OCRResult {
+  success: boolean
+  extractedText: string
+  confidence?: number
+  processingTime: number
+  provider: string
+  error?: string
+  metadata?: {
+    pageCount?: number
+    language?: string
+    hasImages?: boolean
+    hasTables?: boolean
+  }
+}
+
 class MistralOCRService {
   private client: Mistral
   private readonly maxFileSize: number
   private readonly timeout: number
+
+  // One canonical regex for terpene panels; used everywhere
+  private readonly TERP_HDR =
+    /(?:M[-–—]?0?255S?\b.*TERPENES|TERPENES?\s+BY\s+GC[-–—]?\s*FID|TERPENE\s+PROFILE)/i
 
   constructor() {
     const apiKey = process.env.MISTRAL_API_KEY
@@ -32,106 +54,22 @@ class MistralOCRService {
     this.timeout = parseInt(process.env.OCR_TIMEOUT || '180000') // 3 minutes
   }
 
-  async processDocument(filePath: string): Promise<OCRResult> {
-    const startTime = Date.now()
-
-    try {
-      console.log('Starting Mistral OCR processing for:', filePath)
-
-      const stats = await fs.promises.stat(filePath)
-      if (stats.size > this.maxFileSize) {
-        return {
-          success: false,
-          extractedText: '',
-          processingTime: Date.now() - startTime,
-          provider: 'mistral-ocr',
-          error: `File size ${stats.size} bytes exceeds maximum ${this.maxFileSize} bytes`
-        }
-      }
-
-      console.log('Encoding PDF to base64...')
-      const base64Pdf = await this.encodePdf(filePath)
-      
-      console.log('Processing with Mistral OCR API...')
-      const ocrResponse: any = await Promise.race([
-        this.client.ocr.process({
-          model: "mistral-ocr-latest",
-          document: { type: "document_url", documentUrl: `data:application/pdf;base64,${base64Pdf}` },
-          includeImageBase64: true // <- important; helps the model keep table pages
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('OCR processing timeout')), this.timeout))
-      ])
-
-      console.log('OCR processing completed successfully')
-
-      // Per-page visibility: make sure terpene page exists in OCR output
-      if (ocrResponse?.pages?.length) {
-        console.log(`Mistral returned ${ocrResponse.pages.length} pages`)
-        ocrResponse.pages.forEach((p: any, i: number) => {
-          const md = (p.markdown || '').slice(0, 250).replace(/\n/g, ' ')
-          console.log(`Page ${i+1} md preview:`, md)
-          if (/M-0?255|TERPENES?\s+BY\s+GC-?FID|TERPENE\s+PROFILE/i.test(p.markdown || '')) {
-            console.log(`✅ Page ${i+1} looks like terpene panel (M-0255 / TERPENES BY GC-FID).`)
-          }
-        })
-      }
-
-      const rawText = this.extractTextFromResponse(ocrResponse)
-      if (!rawText || rawText.trim().length === 0) {
-        throw new Error('No text could be extracted from the document')
-      }
-
-      console.log('Raw extracted text length:', rawText.length)
-      console.log('=== DIAGNOSTIC: RAW OCR TEXT (first 1200 chars) ===')
-      console.log(rawText.substring(0, 1200))
-      console.log('Terpene hdr present? ', /M-0?255|TERPENES?\s+BY\s+GC-?FID|TERPENE\s+PROFILE/i.test(rawText))
-
-      // Clean, but KEEP table content; do not strip pipes/rows.
-      const cleanedText = this.cleanOCRTextForCOA(rawText)
-      console.log('Cleaned text length:', cleanedText.length)
-      console.log('Cleaned contains terpene header?', /M-0?255|TERPENES?\s+BY\s+GC-?FID|TERPENE\s+PROFILE/i.test(cleanedText))
-
-      const confidence = this.estimateConfidence(cleanedText, ocrResponse)
-      const metadata = this.extractMetadata(cleanedText, ocrResponse)
-
-      return {
-        success: true,
-        extractedText: cleanedText,
-        confidence,
-        processingTime: Date.now() - startTime,
-        provider: 'mistral-ocr',
-        metadata
-      }
-
-    } catch (error) {
-      console.error('Mistral OCR processing error:', error)
-      return {
-        success: false,
-        extractedText: '',
-        processingTime: Date.now() - startTime,
-        provider: 'mistral-ocr',
-        error: error instanceof Error ? error.message : 'Unknown OCR error'
-      }
-    }
-  }
+  // --- Helpers --------------------------------------------------------------
 
   private async encodePdf(pdfPath: string): Promise<string> {
-    try {
-      const pdfBuffer = fs.readFileSync(pdfPath)
-      const base64Pdf = pdfBuffer.toString('base64')
-      console.log('PDF encoded successfully, size:', base64Pdf.length, 'characters')
-      return base64Pdf
-    } catch (error) {
-      console.error('Error encoding PDF:', error)
-      throw new Error(`Failed to encode PDF: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    }
+    const pdfBuffer = fs.readFileSync(pdfPath)
+    const base64Pdf = pdfBuffer.toString('base64')
+    console.log('PDF encoded successfully, size:', base64Pdf.length, 'characters')
+    return base64Pdf
   }
 
   private extractTextFromResponse(ocrResponse: any): string {
     try {
       if (ocrResponse?.pages && Array.isArray(ocrResponse.pages)) {
         const allMarkdown = ocrResponse.pages
-          .map((page: any, index: number) => page.markdown ? `=== PAGE ${index + 1} ===\n${page.markdown}` : '')
+          .map((page: any, index: number) =>
+            page?.markdown ? `=== PAGE ${index + 1} ===\n${page.markdown}` : ''
+          )
           .filter(Boolean)
           .join('\n\n')
         if (allMarkdown.length) return allMarkdown
@@ -141,7 +79,9 @@ class MistralOCRService {
       if (ocrResponse?.content) {
         if (typeof ocrResponse.content === 'string') return ocrResponse.content
         if (Array.isArray(ocrResponse.content)) {
-          return ocrResponse.content.map((it: any) => (typeof it === 'string' ? it : (it.text || it.content || ''))).join('\n')
+          return ocrResponse.content
+            .map((it: any) => (typeof it === 'string' ? it : (it.text || it.content || '')))
+            .join('\n')
         }
       }
       if (ocrResponse?.data?.text) return ocrResponse.data.text
@@ -164,13 +104,13 @@ class MistralOCRService {
       .replace(/`(.*?)`/g, '$1')
       .replace(/\[(.*?)\]\(.*?\)/g, '$1')
 
-    // 2) Character / number fixes
+    // 2) Character / number fixes (preserve \n)
     cleaned = cleaned
       .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')            // 24,2 -> 24.2
       .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')            // 24;2 -> 24.2
       .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')     // 24 2% -> 24.2%
       .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')          // unify percent
-      .replace(/[^\S\r\n]+/g, ' ')                             // normalize spaces
+      .replace(/[^\S\r\n]+/g, ' ')                      // normalize spaces (keep \n)
       .replace(/TH[CG]/gi, 'THC')
       .replace(/CB[DO]/gi, 'CBD')
       .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
@@ -179,10 +119,10 @@ class MistralOCRService {
       .replace(/β/gi, 'BETA-')
       .replace(/α/gi, 'ALPHA-')
       .replace(/γ/gi, 'GAMMA-')
-      .replace(/Δ/gi, 'DELTA-');
+      .replace(/Δ/gi, 'DELTA-')
 
-    // 3) Keep line breaks if they existed in page markdown (helps section slicing)
-    cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE') // ensure breaks before page headers
+    // 3) Ensure breaks before page headers to help slicing
+    cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE')
 
     return cleaned.trim()
   }
@@ -195,20 +135,16 @@ class MistralOCRService {
     if (/thc/i.test(text)) confidence += 5
     if (/cbd/i.test(text)) confidence += 3
     if (/terpene/i.test(text)) confidence += 3
+
     const cleanThc = text.match(/TOTAL\s+THC\s*:\s*\d+\.?\d*%/i)
     const cleanCbd = text.match(/TOTAL\s+CBD\s*:\s*\d+\.?\d*%/i)
     const cleanTot = text.match(/TOTAL\s+CANNABINOIDS\s*:\s*\d+\.?\d*%/i)
     if (cleanThc) confidence += 10
     if (cleanCbd) confidence += 8
     if (cleanTot) confidence += 8
+
     if (ocrResponse?.confidence) confidence = Math.min(confidence, ocrResponse.confidence * 100)
     return Math.min(Math.max(confidence, 35), 95)
-  }
-
-  private extractMetadata(text: string, ocrResponse: any) {
-    const pageCount = ocrResponse?.pages?.length || 1
-    const hasImages = !!(ocrResponse?.images?.length)
-    return { pageCount, hasImages, hasTables: this.detectTables(text), language: 'en' }
   }
 
   private detectTables(text: string): boolean {
@@ -220,10 +156,184 @@ class MistralOCRService {
     return rows > 3
   }
 
+  private extractMetadata(text: string, ocrResponse: any) {
+    const pageCount = ocrResponse?.pages?.length || 1
+    const hasImages =
+      !!(ocrResponse as any)?.images?.length ||
+      !!(ocrResponse as any)?.pages?.some((p: any) => p?.images?.length || p?.imageBase64s?.length || p?.imageBase64)
+    return { pageCount, hasImages, hasTables: this.detectTables(text), language: 'en' }
+  }
+
+  // Image OCR ---------------------------------------------------------------
+
+  private async ocrBase64Image(imgB64: string): Promise<string> {
+    try {
+      const resp = await this.client.ocr.process({
+        model: 'mistral-ocr-latest',
+        document: { type: 'document_url', documentUrl: `data:image/jpeg;base64,${imgB64}` },
+        includeImageBase64: false
+      })
+      if (resp?.pages?.length) {
+        return resp.pages.map((p: any) => p?.markdown || p?.text || '').join('\n')
+      }
+      return (resp as any)?.text || ''
+    } catch (e) {
+      console.warn('image OCR failed:', e)
+      return ''
+    }
+  }
+
+  private pageImageBase64s(page: any): string[] {
+    if (!page) return []
+    if (Array.isArray(page.images)) {
+      return page.images.map((img: any) => img?.base64 || img?.data || '').filter(Boolean)
+    }
+    if (Array.isArray(page.imageBase64s)) return page.imageBase64s.filter(Boolean)
+    if (typeof page.imageBase64 === 'string') return [page.imageBase64]
+    return []
+  }
+
+  // Stitch text from image-only pages or pages that look like terpene panel
+  private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
+    const resp = ocrResponse as any
+    if (!resp?.pages?.length) return currentMarkdown
+
+    let combined = currentMarkdown
+
+    for (let i = 0; i < resp.pages.length; i++) {
+      const page = resp.pages[i]
+      const md = page?.markdown || ''
+      const pageHasTerpHeader = this.TERP_HDR.test(md)
+      const looksImageOnly = !/\w{3,}/.test(md) || /^\s*!\[/.test(md)
+
+      if (looksImageOnly || pageHasTerpHeader) {
+        const imgs = this.pageImageBase64s(page)
+        if (imgs.length) {
+          for (const b64 of imgs) {
+            const imgText = await this.ocrBase64Image(b64)
+            if (imgText && imgText.trim()) {
+              combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
+            }
+          }
+        }
+      }
+    }
+    return combined
+  }
+
+  // --- Public: main entry ---------------------------------------------------
+
+  async processDocument(filePath: string): Promise<OCRResult> {
+    const startTime = Date.now()
+
+    try {
+      console.log('Starting Mistral OCR processing for:', filePath)
+
+      // Validate file exists / size
+      const stats = await fs.promises.stat(filePath)
+      if (stats.size > this.maxFileSize) {
+        return {
+          success: false,
+          extractedText: '',
+          processingTime: Date.now() - startTime,
+          provider: 'mistral-ocr',
+          error: `File size ${stats.size} bytes exceeds maximum ${this.maxFileSize} bytes`
+        }
+      }
+
+      // Encode PDF
+      console.log('Encoding PDF to base64...')
+      const base64Pdf = await this.encodePdf(filePath)
+
+      // OCR PDF (request page images too)
+      console.log('Processing with Mistral OCR API...')
+      const ocrResponse = await Promise.race([
+        this.client.ocr.process({
+          model: 'mistral-ocr-latest',
+          document: { type: 'document_url', documentUrl: `data:application/pdf;base64,${base64Pdf}` },
+          includeImageBase64: true
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('OCR processing timeout')), this.timeout)
+        )
+      ])
+
+      console.log('OCR processing completed successfully')
+
+      // Quick per-page preview
+      if ((ocrResponse as any)?.pages?.length) {
+        const resp = ocrResponse as any
+        console.log(`Mistral returned ${resp.pages.length} pages`)
+        resp.pages.forEach((p: any, i: number) => {
+          const md = (p?.markdown || '').slice(0, 250).replace(/\n/g, ' ')
+          console.log(`Page ${i + 1} md preview:`, md)
+          if (this.TERP_HDR.test(p?.markdown || '')) {
+            console.log(`✅ Page ${i + 1} looks like terpene panel (M-0255 / TERPENES BY GC-FID).`)
+          }
+        })
+      }
+
+      // Extract text from response
+      const rawText = this.extractTextFromResponse(ocrResponse)
+      if (!rawText || rawText.trim().length === 0) {
+        throw new Error('No text could be extracted from the document')
+      }
+
+      console.log('Raw extracted text length:', rawText.length)
+      console.log('=== DIAGNOSTIC: RAW OCR TEXT (first 1200 chars) ===')
+      console.log(rawText.substring(0, 1200))
+      console.log('Terpene hdr present? ', this.TERP_HDR.test(rawText))
+
+      // Stitch any image-only pages (esp. terpene table) into the text
+      const rawPlusImages = await this.appendImageOnlyPageText(ocrResponse, rawText)
+      if (rawPlusImages.length !== rawText.length) {
+        console.log(`Appended image OCR text: ${rawText.length} -> ${rawPlusImages.length} chars`)
+      }
+
+      // Clean (keep tables)
+      const cleanedText = this.cleanOCRTextForCOA(rawPlusImages)
+      console.log('Cleaned text length:', cleanedText.length)
+      console.log('Cleaned contains terpene header?', this.TERP_HDR.test(cleanedText))
+
+      // Log the slice around the terpene panel if present
+      const terpStart = cleanedText.search(this.TERP_HDR)
+      if (terpStart >= 0) {
+        const panelPreview = cleanedText.slice(terpStart, terpStart + 1500)
+        console.log('=== TERPENE PANEL SLICE (first 1500 chars) ===\n', panelPreview)
+      } else {
+        console.log('No terpene header found even after image OCR stitching.')
+      }
+
+      // Score & metadata
+      const confidence = this.estimateConfidence(cleanedText, ocrResponse)
+      const metadata = this.extractMetadata(cleanedText, ocrResponse)
+
+      return {
+        success: true,
+        extractedText: cleanedText,
+        confidence,
+        processingTime: Date.now() - startTime,
+        provider: 'mistral-ocr',
+        metadata
+      }
+    } catch (error) {
+      console.error('Mistral OCR processing error:', error)
+      return {
+        success: false,
+        extractedText: '',
+        processingTime: Date.now() - startTime,
+        provider: 'mistral-ocr',
+        error: error instanceof Error ? error.message : 'Unknown OCR error'
+      }
+    }
+  }
+
+  // --- Misc -----------------------------------------------------------------
+
   async validateApiKey(): Promise<boolean> {
     try {
       const response = await fetch('https://api.mistral.ai/v1/models', {
-        headers: { 'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}` }
+        headers: { Authorization: `Bearer ${process.env.MISTRAL_API_KEY}` }
       })
       return response.ok
     } catch {
@@ -232,13 +342,17 @@ class MistralOCRService {
   }
 }
 
+// Singleton instance
 let mistralOCRInstance: MistralOCRService | null = null
 
 export function getMistralOCRService(): MistralOCRService {
-  if (!mistralOCRInstance) mistralOCRInstance = new MistralOCRService()
+  if (!mistralOCRInstance) {
+    mistralOCRInstance = new MistralOCRService()
+  }
   return mistralOCRInstance
 }
 
+// Convenience function for processing documents
 export async function processPDFWithMistral(filePath: string): Promise<OCRResult> {
   const service = getMistralOCRService()
   return service.processDocument(filePath)
