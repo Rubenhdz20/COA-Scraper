@@ -197,7 +197,7 @@ class MistralOCRService {
   }
 
   // Stitch text from image-only pages or pages that look like terpene panel
-  private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
+private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
   const resp = ocrResponse as any
   if (!resp?.pages?.length) return currentMarkdown
 
@@ -213,26 +213,30 @@ class MistralOCRService {
     const pageHasTerpHeader = this.TERP_HDR.test(md)
     const looksImageOnly = !/\w{3,}/.test(md) || isImagePlaceholder
     
-    // NEW: Also check page number - 2 River terpenes are often on page 2
-    const isPotentialTerpPage = (i === 1 || i === 2) // Pages 2-3 (0-indexed)
-
-    // OCR the page if it's image-only OR a potential terpene page OR has terpene header
-    if (looksImageOnly || pageHasTerpHeader || (isPotentialTerpPage && hasMinimalText)) {
+    // FORCE IMAGE OCR FOR ALL PAGES - to ensure we get tables
+    const shouldOCR = true  // Always try image OCR for now
+    
+    if (shouldOCR || looksImageOnly || pageHasTerpHeader) {
       const imgs = this.pageImageBase64s(page)
-      if (imgs.length) {
-        console.log(`🖼️  Page ${i + 1} appears to be image-based, running image OCR...`)
+      if (imgs.length > 0) {
+        console.log(`🖼️  Page ${i + 1} has images, running image OCR...`)
         for (const b64 of imgs) {
           const imgText = await this.ocrBase64Image(b64)
-          if (imgText && imgText.trim()) {
+          if (imgText && imgText.trim().length > 50) {
             combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
             console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1} image`)
           }
         }
       } else {
-        console.log(`⚠️  Page ${i + 1} looks like an image but no image data available`)
+        console.log(`⚠️  Page ${i + 1} should have images but none found`)
       }
     }
   }
+  
+  if (combined.length > currentMarkdown.length) {
+    console.log(`📊 Image OCR added ${combined.length - currentMarkdown.length} chars`)
+  }
+  
   return combined
 }
 
