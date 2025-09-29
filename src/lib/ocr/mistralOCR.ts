@@ -170,7 +170,7 @@ class MistralOCRService {
       .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')            // 24;2 -> 24.2
       .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')     // 24 2% -> 24.2%
       .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')          // unify percent
-      .replace(/\s+/g, ' ')                             // normalize spaces
+      .replace(/[^\S\r\n]+/g, ' ')                             // normalize spaces
       .replace(/TH[CG]/gi, 'THC')
       .replace(/CB[DO]/gi, 'CBD')
       .replace(/TOTAL\s+THC/gi, 'TOTAL THC')

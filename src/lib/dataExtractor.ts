@@ -52,19 +52,46 @@ export async function extractDataFromOCRText(ocrText: string): Promise<Extracted
       }
     }
 
+    // Merge strategy results
     const finalResult = combineResults(results, labType)
 
-    // Try terpene extraction ONLY if a terpene panel exists (prevents false 0s)
-    const terpPanel = findTerpenePanel(ocrText)
-    if (terpPanel) {
-      const terps = extractTerpenesFromPanel(terpPanel)
-      if (terps.length) {
-        finalResult.terpenes = terps.slice(0, 3)
-        finalResult.confidence = Math.min((finalResult.confidence || 0) + 8, 95)
+    // --- TERPENES: only try if a panel exists, and don't overwrite non-empty arrays ---
+    if (!finalResult.terpenes || finalResult.terpenes.length === 0) {
+      const terpPanel = findTerpenePanel(ocrText) // your helper that slices the "TERPENES BY GC-FID" section
+      if (terpPanel) {
+        console.log('✅ Terpene panel detected. Preview:', terpPanel.substring(0, 220))
+        let terps = extractTerpenesFromPanel(terpPanel) // your robust table-aware parser
+        console.log('Parsed terpene candidates (panel):', terps)
+
+        // Fallback: loose text scrape if table parser returned nothing
+        if (!terps || terps.length === 0) {
+          if (typeof extractTerpenesFromLooseText === 'function') {
+            terps = extractTerpenesFromLooseText(terpPanel)
+            console.log('Parsed terpene candidates (loose fallback):', terps)
+          } else {
+            console.log('Loose fallback not available; skipping.')
+          }
+        }
+
+        if (terps && terps.length) {
+          // Sort desc and keep top 3
+          finalResult.terpenes = terps
+            .sort((a, b) => b.percentage - a.percentage)
+            .slice(0, 3)
+
+          // Small confidence nudge
+          finalResult.confidence = Math.min((finalResult.confidence || 0) + 8, 95)
+          console.log('🌿 Top terpenes saved:', finalResult.terpenes)
+        } else {
+          console.log('Terpene panel present but no rows parsed.')
+        }
+      } else {
+        console.log('No explicit terpene panel detected; skipping terpene parsing.')
       }
     } else {
-      console.log('No explicit terpene panel detected; skipping terpene parsing.')
+      console.log('Terpenes already present from strategies; skipping panel parse.')
     }
+    // --- END TERPENES ---
 
     // Try test date (2River styles) if missing
     if (!finalResult.testDate) {
@@ -102,6 +129,7 @@ function detectLabType(text: string): string {
   if (/STEEP\s*HILL/i.test(text)) return 'steephill'
   return 'generic'
 }
+
 function detectLabName(text: string): string | null {
   const labs = [/2\s*RIVER\s*LABS[^,\n]*/i, /SC\s*LABS[^,\n]*/i, /STEEP\s*HILL[^,\n]*/i]
   for (const p of labs) { const m = text.match(p); if (m) return m[0].trim() }
@@ -243,8 +271,6 @@ function normalizeChemText(s: string): string {
     .replace(/Δ/gi, 'DELTA-');
 }
 
-// --- Terpene parsing helpers (drop-in) ---
-
 // Convert an "AMT" token to % given optional unit
 function amtTokenToPercent(token: string, unit?: string): number | null {
   if (!token) return null
@@ -384,6 +410,67 @@ function sliceTerpenePanel(text: string): string | null {
   return panel
 }
 
+// strict “row” detector: needs a % on the line (no ND / < LOQ)
+const ROW_WITH_PERCENT =
+  /^\s*([A-Z0-9α-ωβγΔ\-\s\.]+?)\s+(?:AMT:?\s*)?(\d+(?:\.\d+)?)\s*%\b/i;
+
+// same line but with columns: NAME | AMT | AMT | ...
+const PIPE_ROW =
+  /^\s*([A-Z0-9α-ωβγΔ\-\s\.]+?)\s*\|\s*(?:ND|<\s*LOQ|(\d+(?:\.\d+)?)\s*%)\b/i;
+
+function getTerpenePanelSlice(text: string): string | null {
+  // capture from the terpene header to the next page/header
+  const m = text.match(
+    /(M[-\s]*0?25[5S]\s*:\s*)?TERPENES\s+BY\s+GC[-\s]*FID[\s\S]{0,4000}?(?=\n=== PAGE|\n#\s|$)/i
+  );
+  return m ? m[0] : null;
+}
+
+// --- core parser ---
+function extractTerpenesFromPanel(panel: string): Array<{ name: string; percentage: number }> {
+  const out: Array<{ name: string; percentage: number }> = [];
+  const seen = new Map<string, number>();
+
+  // split by real lines; keep them intact
+  const lines = panel.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // skip header/columns
+    if (/^(ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL)\b/i.test(line)) continue;
+    if (/^TOTAL\s+TERPENES\b/i.test(line)) continue;
+
+    // skip non-quant rows quickly
+    if (/\b(ND|<\s*LOQ)\b/i.test(line)) continue;
+
+    // try pipe-style table row first
+    let m = line.match(PIPE_ROW);
+    if (!m) {
+      // then try whitespace table row
+      m = line.match(ROW_WITH_PERCENT);
+    }
+    if (!m) continue;
+
+    const rawName = m[1] ?? '';
+    const pctStr  = (m[2] ?? '').replace(',', '.');
+    const pct     = pctStr ? parseFloat(pctStr) : NaN;
+
+    if (!isFinite(pct) || pct <= 0 || pct >= 20) continue; // sanity + ignore totals
+
+    const name = normalizeTerpName(rawName);
+    if (!name || /TERPENES BY GC[-\s]*FID/i.test(name)) continue;
+
+    // keep max in case of duplicates
+    const prev = seen.get(name) ?? 0;
+    if (pct > prev) seen.set(name, pct);
+  }
+
+  for (const [name, percentage] of seen) out.push({ name, percentage });
+
+  // sort desc and take top 3
+  out.sort((a, b) => b.percentage - a.percentage);
+  return out.slice(0, 3);
+}
+
 // ----------------- Terpene panel parsing -----------------
 
 // Find the terpene panel slice to parse (M-0255: TERPENES BY GC-FID)
@@ -459,107 +546,106 @@ function parseAmtToPercent(amt: string): number | null {
   return null
 }
 
-// REPLACE your existing extractTerpenesFromPanel with this:
-function extractTerpenesFromPanel(panel: string): Array<{ name: string; percentage: number }> {
-  // 1) normalize: greek letters, dashes, nbsp
-  let p = normalizeChemText(panel);
+// -------- Loose fallback terpene scraper --------
+// Use when extractTerpenesFromPanel(panel) returns [].
 
-  // 2) light table cleanup
-  p = p.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim();
+function extractTerpenesFromLooseText(text: string): Array<{ name: string; percentage: number }> {
+  // 1) Normalize text so names are detectable
+  let t = text
+    // greek → ascii families
+    .replace(/β/gi, 'BETA-')
+    .replace(/α/gi, 'ALPHA-')
+    .replace(/γ/gi, 'GAMMA-')
+    .replace(/Δ/gi, 'DELTA-')
+    // remove excessive spaces around hyphens/slashes/colons
+    .replace(/\s*-\s*/g, '-')
+    .replace(/\s*\/\s*/g, '/')
+    .replace(/\s*:\s*/g, ':')
+    // collapse “D - L I M O N E N E” or “B - P I N E N E”
+    .replace(/\b([A-Z])(?:\s+[A-Z])+\b/g, (m) => m.replace(/\s+/g, ''));
 
-  // 3) quick guard: must contain terpene-ish tokens
-  if (!/(TERPENES?|LIMONENE|MYRCENE|CARYOPHYLLENE|LINALOOL|PINENE|HUMULENE)/i.test(p)) {
-    return [];
-  }
+  // Also try to collapse “ALPHA - PINENE” → “ALPHA-PINENE”
+  t = t.replace(/\b(ALPHA|BETA|GAMMA|DELTA)\s*-\s*([A-Z]+)\b/g, '$1-$2');
 
-  // 4) known terpene names (normalized)
-  const names = [
-    'LIMONENE','MYRCENE','CARYOPHYLLENE','CARYOPHYLLENE OXIDE','LINALOOL','HUMULENE',
-    'TERPINOLENE','OCIMENE','NEROLIDOL','ALPHA-PINENE','BETA-PINENE','PINENE',
-    'BISABOLOL','CAMPHENE','GERANIOL','EUCALYPTOL','GUAIOL','ISOPULEGOL',
-    'P-CYMENE','TRANS-OCIMENE','CIS-OCIMENE','ALPHA-TERPINENE','GAMMA-TERPINENE',
-    'DELTA-3-CARENE'
-  ];
-
-  const out = new Map<string, number>();
-
-  const pretty = (raw: string) =>
-    raw
-      .replace(/\s+/g,' ')
-      .replace(/^BETA-MYRCENE$/i,'Myrcene')
-      .replace(/^CARYOPHYLLENE$/i,'Caryophyllene')
-      .replace(/^CARYOPHYLLENE OXIDE$/i,'Caryophyllene Oxide')
-      .replace(/^LIMONENE$/i,'Limonene')
-      .replace(/^LINALOOL$/i,'Linalool')
-      .replace(/^HUMULENE$/i,'Humulene')
-      .replace(/^ALPHA-PINENE$/i,'Alpha-Pinene')
-      .replace(/^BETA-PINENE$/i,'Beta-Pinene')
-      .replace(/^PINENE$/i,'Pinene')
-      .replace(/^TERPINOLENE$/i,'Terpinolene')
-      .replace(/^NEROLIDOL$/i,'Nerolidol')
-      .replace(/^OCIMENE$/i,'Ocimene')
-      .replace(/^P-CYMENE$/i,'p-Cymene')
-      .replace(/^EUCALYPTOL$/i,'Eucalyptol')
-      .replace(/^GERANIOL$/i,'Geraniol')
-      .replace(/^GUAIOL$/i,'Guaiol')
-      .replace(/^ISOPULEGOL$/i,'Isopulegol')
-      .replace(/^ALPHA-TERPINENE$/i,'Alpha-Terpinene')
-      .replace(/^GAMMA-TERPINENE$/i,'Gamma-Terpinene')
-      .replace(/^DELTA-3-CARENE$/i,'Delta-3-Carene');
-
-  const record = (rawName: string, val: number) => {
-    if (!(val > 0 && val < 10)) return;  // sanity for % values
-    const key = pretty(rawName);
-    const prev = out.get(key) ?? 0;
-    if (val > prev) out.set(key, val);
+  // 2) Canonical terpene dictionary (add more as you need)
+  const TERPENES: Record<string, RegExp> = {
+    'D-LIMONENE': /\b(D-?LIMONENE|LIMONENE)\b/i,
+    'BETA-MYRCENE': /\b(BETA-?MYRCENE|MYRCENE)\b/i,
+    'BETA-CARYOPHYLLENE': /\b(BETA-?CARYOPHYLLENE|CARYOPHYLLENE)\b/i,
+    'LINALOOL': /\bLINALOOL\b/i,
+    'ALPHA-HUMULENE': /\b(ALPHA-?HUMULENE|HUMULENE)\b/i,
+    'TRANS-NEROLIDOL': /\b(TRANS-?NEROLIDOL|T-NEROLIDOL)\b/i,
+    'BETA-PINENE': /\b(BETA-?PINENE|B-PINENE)\b/i,
+    'ALPHA-PINENE': /\b(ALPHA-?PINENE|A-PINENE)\b/i,
+    'ALPHA-BISABOLOL': /\b(ALPHA-?BISABOLOL|BISABOLOL)\b/i,
+    'CAMPHENE': /\bCAMPHENE\b/i,
+    'CARYOPHYLLENE OXIDE': /\bCARYOPHYLLENE\s+OXIDE\b/i,
+    'TERPINOLENE': /\bTERPINOLENE\b/i,
+    'GAMMA-TERPINENE': /\b(GAMMA-?TERPINENE|G-TERPINENE)\b/i,
+    'P-CYMENE': /\bP-?CYMENE\b/i,
+    'CIS-OCIMENE': /\bCIS-?OCIMENE\b/i,
+    'TRANS-OCIMENE': /\bTRANS-?OCIMENE\b/i,
+    'CIS-NEROLIDOL': /\bCIS-?NEROLIDOL\b/i,
+    'GERANIOL': /\bGERANIOL\b/i,
+    'EUCALYPTOL': /\bEUCALYPTOL\b/i,
+    'GUAIOL': /\bGUAIOL\b/i,
+    'ISOPULEGOL': /\bISOPULEGOL\b/i,
+    'DELTA-3-CARENE': /\b(DELTA-?3-?CARENE|D3-?CARENE)\b/i,
   };
 
-  // 5) primary pass: “NAME … 0.514%” or “NAME … 5.14 mg/g” (→ 0.514%)
-  for (const n of names) {
-    // allow D- prefix (e.g., D-LIMONENE) and odd spacing
-    const nameRe = new RegExp(`(?:\\b[AD]-\\s*)?${n.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')}`, 'i');
+  // Helper: find nearest % or mg/g value in a small window
+  function findValueNear(idx: number): number | null {
+    const window = t.slice(Math.max(0, idx - 120), idx + 160);
 
-    let start = 0, hit: RegExpExecArray | null;
-    while ((hit = nameRe.exec(p.substring(start))) !== null) {
-      const idx = start + hit.index;
-      const window = p.substring(idx, Math.min(p.length, idx + 160));
+    // If ND or < LOQ near the name, skip
+    if (/\bND\b|<\s*LOQ/i.test(window)) return null;
 
-      // a) percentage column
-      const perc = window.match(/(\d+\.\d{1,3})\s*%/);
-      if (perc) {
-        record(n, parseFloat(perc[1]));
-      } else {
-        // b) mg/g column → convert to %
-        const mg = window.match(/(\d+\.\d{1,3})\s*mg\/g/i);
-        if (mg) {
-          const mgVal = parseFloat(mg[1]);
-          const pct = +(mgVal / 10).toFixed(3); // 5.14 mg/g ≈ 0.514%
-          record(n, pct);
-        }
+    // Prefer percent (e.g., 0.514 %)
+    const pct = window.match(/(\d+\.?\d*)\s*%/);
+    if (pct) {
+      const v = parseFloat(pct[1]);
+      if (isFinite(v) && v > 0 && v < 20) return v;
+    }
+
+    // Else accept mg/g and convert to %
+    // (1% = 10 mg/g ⇒ % = mg/g / 10)
+    const mg = window.match(/(\d+\.?\d*)\s*mg\/g/i);
+    if (mg) {
+      const mgVal = parseFloat(mg[1]);
+      if (isFinite(mgVal) && mgVal > 0 && mgVal < 200) {
+        const pctVal = mgVal / 10;
+        if (pctVal > 0 && pctVal < 20) return pctVal;
       }
+    }
 
-      start = idx + hit[0].length;
+    return null;
+  }
+
+  const results: Record<string, number> = {};
+
+  // 3) Scan for each terpene and grab the best nearby value
+  for (const [pretty, rx] of Object.entries(TERPENES)) {
+    let m: RegExpExecArray | null;
+    const global = new RegExp(rx, rx.ignoreCase ? 'gi' : 'g');
+
+    while ((m = global.exec(t)) !== null) {
+      const val = findValueNear(m.index);
+      if (val != null) {
+        results[pretty] = Math.max(results[pretty] || 0, val);
+      }
     }
   }
 
-  // 6) fallback: generic “SOMETHING-ENE 0.123%”
-  if (out.size === 0) {
-    const rows = p.match(/([A-Z][A-Z-]{2,}(?:ENE|OL|OOL|OXIDE))\s+(\d+\.\d{1,3})\s*%/gi) || [];
-    for (const r of rows) {
-      const m = r.match(/([A-Z][A-Z-]{2,})\s+(\d+\.\d{1,3})\s*%/i);
-      if (!m) continue;
-      record(m[1], parseFloat(m[2]));
-    }
-  }
-
-  const arr = Array.from(out.entries())
+  // 4) Build array, filter/sort, return top 5
+  const arr = Object.entries(results)
     .map(([name, percentage]) => ({ name, percentage }))
-    .sort((a,b) => b.percentage - a.percentage)
-    .slice(0, 5);
+    .filter(x => x.percentage > 0 && x.percentage < 20)
+    .sort((a, b) => b.percentage - a.percentage);
 
-  console.log('Parsed terpene candidates:', arr);
-  return arr;
+  console.log('Loose terpene scrape results:', arr.slice(0, 8));
+  return arr.slice(0, 5);
 }
+
 
 // ----------------- Cannabinoid helpers -----------------
 function extractCannabinoidValue(text: string, cannabinoidType: string): number | undefined {
