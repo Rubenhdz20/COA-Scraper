@@ -146,8 +146,20 @@ function river2SpecificExtraction(text: string): ExtractedData {
   const iso = extractTestDateISO(text)
   if (iso) { res.testDate = iso; res.confidence += 5 }
 
-  // Don't parse terpenes here; done centrally with panel detection
+  // ✅ Terpenes: call right before returning, only if a panel exists
+  if (hasTerpenePanel(text)) {
+    const terpList = extractTerpenes(text)           // your table-aware parser
+    res.terpenes = terpList.slice(0, 3)              // keep top 3
+    console.log('2river terpenes:', terpList)
+    if (terpList.length > 0) res.confidence += 8     // small boost only if found
+  }
+
   return res
+}
+
+// Simple panel check (put near helpers)
+function hasTerpenePanel(s: string): boolean {
+  return /M-0255[^:\n]*:\s*TERPENES?/i.test(s) || /TERPENES?\s+BY\s+GC/i.test(s)
 }
 
 function structuredPatternExtraction(text: string): ExtractedData {
@@ -231,6 +243,146 @@ function normalizeChemText(s: string): string {
     .replace(/Δ/gi, 'DELTA-');
 }
 
+// --- Terpene parsing helpers (drop-in) ---
+
+// Convert an "AMT" token to % given optional unit
+function amtTokenToPercent(token: string, unit?: string): number | null {
+  if (!token) return null
+  const raw = token.replace(/[^\d.<]/g, '').trim()
+  if (!raw || /^ND$/i.test(raw)) return null
+  if (/^<\s*LOQ$/i.test(raw)) return null
+  // handle "<0.01" -> 0.01
+  const numMatch = raw.match(/\d+(\.\d+)?/)
+  if (!numMatch) return null
+  const val = parseFloat(numMatch[0])
+  if (!isFinite(val)) return null
+
+  const u = (unit || '').toLowerCase()
+  if (u.includes('%')) return val
+  if (u.includes('mg/g')) return val * 0.1 // 1 mg/g = 0.1%
+  if (u.includes('µg/g') || u.includes('μg/g') || u.includes('ug/g')) return val / 10000 // 1 μg/g = 0.0001%
+  // If unit missing but the table is "AMT (%)", keep as %; if "AMT (mg/g)" we’ll also catch via header in row parser below.
+  return val
+}
+
+// Parse AMT unit from a header string like "AMT (%)" or "AMT (mg/g)"
+function headerUnit(header: string): string | undefined {
+  const m = header.match(/\(\s*([%μµu]g\/g|mg\/g|%)\s*\)/i)
+  return m ? m[1] : undefined
+}
+
+// Core terpene parser that can handle markdown tables and plain lines
+export function extractTerpenes(text: string): Array<{ name: string; percentage: number }> {
+  const out: Record<string, number> = {}
+
+  // 1) Prefer a terpene panel slice if you have a slicer; otherwise use the whole text
+  const panel = sliceTerpenePanel(text) || text
+
+  // Log a small preview to confirm we’re parsing what we think
+  const preview = panel.slice(0, 600)
+  console.log('🔎 Terpene panel preview:', preview)
+
+  // 2) Try markdown table rows first
+  // Find header row to know which column is AMT and its unit
+  // Typical header: | ANALYTE | LIMIT | AMT (mg/g) | LOD/LOQ | PASS/FAIL |
+  const tableRows = panel.split('\n').filter(l => l.includes('|'))
+  let tableAmtUnit: string | undefined
+
+  for (const row of tableRows) {
+    if (/AMT/i.test(row)) {
+      tableAmtUnit = headerUnit(row)
+      break
+    }
+  }
+
+  // Parse each row that looks like: | MYRCENE | ... | 0.45 | ... |
+  for (const row of tableRows) {
+    // skip separator rows like | --- | --- |
+    if (/^\s*\|\s*-{2,}\s*\|/i.test(row)) continue
+
+    const cells = row.split('|').map(c => c.trim()).filter(Boolean)
+    if (cells.length < 3) continue
+
+    // heuristics: first or second cell contains the analyte name
+    const analyteCellIdx = /analyte/i.test(cells[0]) ? 1 : 0
+    const amtIdx = cells.findIndex(c => /^(amt|amount)\b/i.test(c)) // rare if raw header per row
+    const nameRaw = cells[analyteCellIdx] || ''
+    const hasName = /(ene|ol|oxide|myrcene|limonene|pinene|terpinolene|caryophyllene|linalool|humulene|ocimene|bisabolol|nerolidol|camphene|eucalyptol|guaiol|terpinene|carene|cymene|geraniol)/i.test(nameRaw)
+    if (!hasName) continue
+
+    // choose a numeric-looking cell near the "AMT" column if present; else pick the first numeric cell
+    let amtToken = ''
+    let unit = tableAmtUnit
+
+    // If header unit missing, try to infer unit from token
+    const numericCell = cells.find(c => /(\d+(\.\d+)?)\s*(%|mg\/g|[μµu]g\/g)?/i.test(c) && !/limit|lod|loq|pass|fail|nd|<\s*loq/i.test(c))
+    if (numericCell) {
+      const m = numericCell.match(/(\d+(\.\d+)?)(\s*(%|mg\/g|[μµu]g\/g))?/i)
+      if (m) {
+        amtToken = m[1]
+        unit = m[4] || unit
+      }
+    }
+
+    // If still nothing, skip
+    if (!amtToken) continue
+
+    const pct = amtTokenToPercent(amtToken, unit)
+    if (pct == null || pct <= 0) continue
+
+    const pretty = normalizeTerpName(nameRaw)
+    out[pretty] = Math.max(out[pretty] || 0, pct)
+  }
+
+  // 3) Fallback: plain text rows like "Myrcene 0.45 mg/g" or "β-Caryophyllene 0.21%"
+  if (Object.keys(out).length === 0) {
+    const lineRx = new RegExp(
+      String.raw`\b([A-Zα-ωβγ\- ]{3,}?(?:myrcene|limonene|pinene|terpinolene|caryophyllene|linalool|humulene|ocimene|bisabolol|nerolidol|camphene|eucalyptol|guaiol|terpinene|carene|cymene|geraniol)[A-Zα-ωβγ\- ]*?)\b[^\n\r]{0,40}?(\d+(?:\.\d+)?)\s*(%|mg\/g|[μµu]g\/g)?`,
+      'gi'
+    )
+    let m: RegExpExecArray | null
+    while ((m = lineRx.exec(panel)) !== null) {
+      const name = normalizeTerpName(m[1])
+      const num = m[2]
+      const unit = m[3]
+      const pct = amtTokenToPercent(num, unit)
+      if (pct != null && pct > 0) {
+        out[name] = Math.max(out[name] || 0, pct)
+      }
+    }
+  }
+
+  // 4) Build, sanity filter and sort
+  const arr = Object.entries(out)
+    .map(([name, percentage]) => ({ name, percentage }))
+    .filter(t => t.percentage > 0 && t.percentage < 20)
+    .sort((a, b) => b.percentage - a.percentage)
+
+  console.log('Parsed terpene candidates:', arr.slice(0, 10))
+  return arr
+}
+
+// Try to slice just the terpene panel area to improve precision
+function sliceTerpenePanel(text: string): string | null {
+  // Look for common headers
+  const idx =
+    text.search(/M-0255[^:\n]*:\s*TERPENES?/i) >= 0
+      ? text.search(/M-0255[^:\n]*:\s*TERPENES?/i)
+      : text.search(/TERPENES?\s+BY\s+GC/i)
+
+  if (idx < 0) return null
+
+  // End at next method "M-0xxx", next page, or big header
+  const rest = text.slice(idx)
+  const endMatch = rest.search(/\n\s*M-\d{3}[A-Z]?:|=== PAGE \d+ ===|##\s*[A-Z]/i)
+  const panel = endMatch > 0 ? rest.slice(0, endMatch) : rest.slice(0, 2500)
+
+  // If panel is just an image tag, extend a bit more in case markdown split
+  if (/\!\[img/i.test(panel) && panel.length < 120) {
+    return text.slice(idx, idx + 3000)
+  }
+  return panel
+}
 
 // ----------------- Terpene panel parsing -----------------
 

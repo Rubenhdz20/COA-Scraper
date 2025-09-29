@@ -152,40 +152,60 @@ class MistralOCRService {
     }
   }
 
-  // Keep table characters; only normalize numbers/spacing.
-  private cleanOCRTextForCOA(text: string): string {
-    console.log('Starting comprehensive OCR text cleaning...')
-    let cleaned = text
+  // Keep table characters and line breaks; normalize only what's necessary.
+private cleanOCRTextForCOA(text: string): string {
+  console.log('Starting comprehensive OCR text cleaning...')
 
-    // 1) Mild markdown cleanup — DO NOT strip table pipes/rows
-    cleaned = cleaned
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/\*(.*?)\*/g, '$1')
-      .replace(/`(.*?)`/g, '$1')
-      .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+  let cleaned = text
 
-    // 2) Character / number fixes
-    cleaned = cleaned
-      .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')            // 24,2 -> 24.2
-      .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')            // 24;2 -> 24.2
-      .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')     // 24 2% -> 24.2%
-      .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')          // unify percent
-      .replace(/\s+/g, ' ')                             // normalize spaces
-      .replace(/TH[CG]/gi, 'THC')
-      .replace(/CB[DO]/gi, 'CBD')
-      .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
-      .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
-      .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
-      .replace(/β/gi, 'BETA-')
-      .replace(/α/gi, 'ALPHA-')
-      .replace(/γ/gi, 'GAMMA-')
-      .replace(/Δ/gi, 'DELTA-');
+  // 1) Mild markdown cleanup — DO NOT strip table pipes/rows
+  cleaned = cleaned
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
 
-    // 3) Keep line breaks if they existed in page markdown (helps section slicing)
-    cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE') // ensure breaks before page headers
+  // 2) Character / label fixes (safe)
+  cleaned = cleaned
+    .replace(/TH[CG]/gi, 'THC')
+    .replace(/CB[DO]/gi, 'CBD')
+    .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
+    .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
+    .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
+    .replace(/β/gi, 'BETA-')
+    .replace(/α/gi, 'ALPHA-')
+    .replace(/γ/gi, 'GAMMA-')
+    .replace(/Δ/gi, 'DELTA-')
 
-    return cleaned.trim()
-  }
+  // 3) Number / percent fixes
+  // 3a) European decimals like 24,2% -> 24.2%
+  cleaned = cleaned.replace(/(\d)\s*,\s*(\d)(?=\s*%)/g, '$1.$2')
+
+  // 3b) Spaced decimals like 24 2% -> 24.2% (be conservative: 1–2 digits only)
+  cleaned = cleaned.replace(/\b(\d{1,2})\s+(\d{1,2})\s*%/g, '$1.$2%')
+
+  // 3c) Unify percent glyphs (º, °, etc.) but preserve spacing before %
+  cleaned = cleaned
+    .replace(/(\d+\.?\d*)\s*[º°％]/g, '$1%')
+    .replace(/(\d+\.?\d*)\s*%\s*/g, '$1%') // remove extra spaces before/after %
+
+  // 4) LINE-LEVEL whitespace normalization:
+  //    collapse spaces/tabs within each line, but KEEP \n intact.
+  cleaned = cleaned
+    .split('\n')
+    .map(line =>
+      line
+        .replace(/[ \t]+/g, ' ')         // collapse spaces/tabs inside the line
+        .replace(/\s*:\s*/g, ': ')       // normalize colons "THC : 24" -> "THC: 24"
+        .trimEnd()
+    )
+    .join('\n')
+
+  // 5) Ensure breaks before page headers (helps section slicing)
+  cleaned = cleaned.replace(/(?:\r?\n)?=== PAGE/g, '\n=== PAGE')
+
+  return cleaned.trim()
+}
 
   private estimateConfidence(text: string, ocrResponse: any): number {
     let confidence = 80
