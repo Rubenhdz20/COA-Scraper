@@ -45,34 +45,49 @@ class MistralOCRService {
     return base64Pdf
   }
 
-  private extractTextFromResponse(ocrResponse: any): string {
-    try {
-      if (ocrResponse?.pages && Array.isArray(ocrResponse.pages)) {
-        const allMarkdown = ocrResponse.pages
-          .map((page: any, index: number) =>
-            page?.markdown ? `=== PAGE ${index + 1} ===\n${page.markdown}` : ''
-          )
-          .filter(Boolean)
-          .join('\n\n')
-        if (allMarkdown.length) return allMarkdown
-      }
-      if (typeof ocrResponse === 'string') return ocrResponse
-      if (ocrResponse?.text) return ocrResponse.text
-      if (ocrResponse?.content) {
-        if (typeof ocrResponse.content === 'string') return ocrResponse.content
-        if (Array.isArray(ocrResponse.content)) {
-          return ocrResponse.content
-            .map((it: any) => (typeof it === 'string' ? it : (it.text || it.content || '')))
-            .join('\n')
+ private extractTextFromResponse(ocrResponse: any): string {
+  try {
+    if (ocrResponse?.pages && Array.isArray(ocrResponse.pages)) {
+      const allMarkdown = ocrResponse.pages
+        .map((page: any, index: number) =>
+          page?.markdown ? `=== PAGE ${index + 1} ===\n${page.markdown}` : ''
+        )
+        .filter(Boolean)
+        .join('\n\n')
+      
+      if (allMarkdown.length) {
+        // ADD DIAGNOSTIC LOGGING HERE
+        console.log('🔍🔍🔍 EXTRACTED TEXT SAMPLE (terpene area):')
+        const terpIdx = allMarkdown.search(/TERPENES?\s+BY\s+GC/i)
+        console.log('Terpene search index:', terpIdx)
+        if (terpIdx >= 0) {
+          console.log('=== RAW MARKDOWN TERPENE SECTION ===')
+          console.log(allMarkdown.substring(terpIdx, terpIdx + 1200))
+          console.log('=== END RAW MARKDOWN SECTION ===')
+        } else {
+          console.log('❌ No terpene section found in extracted markdown')
         }
+        
+        return allMarkdown
       }
-      if (ocrResponse?.data?.text) return ocrResponse.data.text
-      console.warn('Could not find text in expected OCR response structure')
-      return ''
-    } catch {
-      return ''
     }
+    if (typeof ocrResponse === 'string') return ocrResponse
+    if (ocrResponse?.text) return ocrResponse.text
+    if (ocrResponse?.content) {
+      if (typeof ocrResponse.content === 'string') return ocrResponse.content
+      if (Array.isArray(ocrResponse.content)) {
+        return ocrResponse.content
+          .map((it: any) => (typeof it === 'string' ? it : (it.text || it.content || '')))
+          .join('\n')
+      }
+    }
+    if (ocrResponse?.data?.text) return ocrResponse.data.text
+    console.warn('Could not find text in expected OCR response structure')
+    return ''
+  } catch {
+    return ''
   }
+}
 
   // Keep table characters; only normalize numbers/spacing.
   private cleanOCRTextForCOA(text: string): string {
