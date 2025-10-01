@@ -62,6 +62,17 @@ export async function POST(
         throw new Error(ocrResult.error || 'OCR produced empty text')
       }
 
+      // ============================================================
+      // ADD DIAGNOSTIC LOGGING HERE (after OCR, before extraction)
+      // ============================================================
+      console.log('\n=== OCR DIAGNOSTIC ===')
+      console.log('Total text length:', ocrResult.extractedText.length)
+      console.log('Page count:', ocrResult.metadata?.pageCount)
+      console.log('Has images:', ocrResult.metadata?.hasImages)
+      console.log('Has tables:', ocrResult.metadata?.hasTables)
+      console.log('OCR confidence:', ocrResult.confidence)
+      console.log('OCR provider:', ocrResult.provider)
+
       console.log('🤖 Step 2: Extraction...')
       extractedData = await extractDataFromOCRText(ocrResult.extractedText)
 

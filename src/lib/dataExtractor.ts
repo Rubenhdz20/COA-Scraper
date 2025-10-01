@@ -991,58 +991,50 @@ function extractTerpenesFromLooseText(text: string): Array<{ name: string; perce
 function extractCannabinoidValue(text: string, cannabinoidType: string): number | undefined {
   console.log(`\n=== Extracting ${cannabinoidType} ===`)
   
-  // Strategy 1: CANNABINOID OVERVIEW section (most reliable)
+  // Strategy 1: CANNABINOID OVERVIEW section
   const overviewMatch = text.match(/CANNABINOID\s+OVERVIEW[\s\S]{0,1200}?(?=CULTIVATOR|DISTRIBUTOR|BATCH RESULT)/i)
   if (overviewMatch) {
     const overviewSection = overviewMatch[0]
     console.log('Found CANNABINOID OVERVIEW section')
     
-    // FIXED: Precise pattern that won't capture dates
-    // Match "TOTAL THC: 27.1 %" format (colon required)
-    const totalPattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:\\s*(\\d+\\.\\d+)\\s*%`, 'i')
+    // FIXED: More precise - require colon and avoid dates
+    const totalPattern = new RegExp(
+      `TOTAL\\s+${cannabinoidType}\\s*:\\s*(\\d+\\.\\d{1,2})\\s*%(?!\\d)`, 
+      'i'
+    )
     const match = overviewSection.match(totalPattern)
     
     if (match) {
       const value = parseFloat(match[1])
       console.log(`✅ Found ${cannabinoidType} in overview: ${value}%`)
-      if (isValidCannabinoidValue(value, cannabinoidType)) {
+      
+      // CRITICAL: Validate it's not a date (no value should be > 100%)
+      if (value <= 100 && isValidCannabinoidValue(value, cannabinoidType)) {
         return value
+      } else {
+        console.log(`⚠️  Value ${value} rejected (out of valid range)`)
       }
     }
   }
 
-  // Strategy 2: M-024 POTENCY table
+  // Strategy 2: M-024 table
   const potencyMatch = text.match(/M-024:\s*POTENCY[\s\S]{0,800}?(?=M-\d{3}|REGULATORY|$)/i)
   if (potencyMatch) {
     const potencySection = potencyMatch[0]
     console.log('Found M-024 POTENCY section')
     
-    // Match table row: "TOTAL THC**  27.1 %  271 mg/g"
-    const tablePattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*\\*{0,2}\\s+(\\d+\\.\\d+)\\s*%`, 'i')
+    const tablePattern = new RegExp(
+      `TOTAL\\s+${cannabinoidType}\\s*\\*{0,2}\\s+(\\d+\\.\\d{1,2})\\s*%(?!\\d)`, 
+      'i'
+    )
     const match = potencySection.match(tablePattern)
     
     if (match) {
       const value = parseFloat(match[1])
-      console.log(`✅ Found ${cannabinoidType} in potency table: ${value}%`)
-      if (isValidCannabinoidValue(value, cannabinoidType)) {
+      console.log(`✅ Found ${cannabinoidType} in table: ${value}%`)
+      if (value <= 100 && isValidCannabinoidValue(value, cannabinoidType)) {
         return value
       }
-    }
-  }
-
-  // Strategy 3: Last resort - anywhere in text
-  // CRITICAL: Use negative lookahead to avoid matching years like "27.2024"
-  const globalPattern = new RegExp(
-    `TOTAL\\s+${cannabinoidType}\\s*[:\\*]?\\s+(\\d+\\.\\d+)\\s*%(?!\\s*\\d{4})`, 
-    'i'
-  )
-  const globalMatch = text.match(globalPattern)
-  
-  if (globalMatch) {
-    const value = parseFloat(globalMatch[1])
-    console.log(`✅ Found ${cannabinoidType} globally: ${value}%`)
-    if (isValidCannabinoidValue(value, cannabinoidType)) {
-      return value
     }
   }
 
@@ -1062,11 +1054,17 @@ function extractCannabinoidValue(text: string, cannabinoidType: string): number 
 
 function isValidCannabinoidValue(value: number, type: string): boolean {
   if (!isFinite(value) || value < 0) return false
+  
+  // ENHANCED: Stricter validation
   switch (type.toUpperCase()) {
-    case 'THC': return value <= 50
-    case 'CBD': return value <= 30
-    case 'TOTAL CANNABINOIDS': return value <= 60
-    default: return value <= 100
+    case 'THC': 
+      return value >= 0.01 && value <= 40 // THC rarely exceeds 40%
+    case 'CBD': 
+      return value >= 0.001 && value <= 30
+    case 'TOTAL CANNABINOIDS':
+      return value >= 0.01 && value <= 45 // Slightly higher than THC
+    default: 
+      return value <= 100
   }
 }
 

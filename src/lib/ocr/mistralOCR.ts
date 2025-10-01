@@ -94,40 +94,48 @@ class MistralOCRService {
   console.log('Starting comprehensive OCR text cleaning...')
   let cleaned = text
 
-  // 1) Mild markdown cleanup
-  cleaned = cleaned
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/`(.*?)`/g, '$1')
-    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+  // 0) Fix character splitting artifacts: "*M* *O* *U* *N* *T*" -> "MOUNT"
+  cleaned = cleaned.replace(/\*([A-Z0-9])\*\s*/gi, '$1')
 
-  // 2) Character / number fixes
+  // 1) Markdown cleanup - remove formatting but keep structure
   cleaned = cleaned
-    .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')
-    .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')
-    .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')
-    .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')
-    .replace(/TH[CG]/gi, 'THC')
-    .replace(/CB[DO]/gi, 'CBD')
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // Bold
+    .replace(/\*(.*?)\*/g, '$1')      // Italic
+    .replace(/`(.*?)`/g, '$1')        // Code
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1') // Links
+
+  // 2) Number and character fixes
+  cleaned = cleaned
+    .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')        // 24,2 -> 24.2
+    .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')        // 24;2 -> 24.2
+    .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%') // 24 2% -> 24.2%
+    .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')      // Normalize percent symbols
+    .replace(/TH[CG]/gi, 'THC')                  // THG/THC typos
+    .replace(/CB[DO]/gi, 'CBD')                  // CBO/CBD typos
     .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
     .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
     .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
     
-    // CRITICAL FIX: Keep Greek letters - don't convert them
-    // This allows terpene regex to match the original characters
-    // .replace(/β/gi, 'BETA-')  // REMOVED
-    // .replace(/α/gi, 'ALPHA-')  // REMOVED
-    // .replace(/γ/gi, 'GAMMA-')  // REMOVED
-    // .replace(/Δ/gi, 'DELTA-')  // REMOVED
+  // 3) CRITICAL: Keep Greek letters - don't convert to ASCII
+  // This preserves the original characters for terpene matching
+  // The conversion will happen in normalizeTerpName() if needed
 
-  // 3) Preserve table structure
+  // 4) Preserve table structure - only normalize EXCESSIVE whitespace
+  // This is critical for terpene table parsing
   cleaned = cleaned
-    .replace(/[ \t]{3,}/g, '  ')
-    .replace(/\r\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{3,}/g, '  ')    // 3+ spaces -> 2 spaces (keeps columns aligned)
+    .replace(/\r\n/g, '\n')         // Normalize line endings
+    .replace(/\n{3,}/g, '\n\n')     // Max 2 consecutive newlines
 
-  // 4) Ensure breaks before page headers
+  // 5) Ensure clean breaks before page headers to help section slicing
   cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE')
+
+  // 6) Log sample for debugging
+  const sample = cleaned.substring(0, 500)
+  console.log('Cleaned text sample:', sample)
+  console.log('Contains Greek β:', /β/.test(cleaned))
+  console.log('Contains Greek α:', /α/.test(cleaned))
+  console.log('Text length after cleaning:', cleaned.length)
 
   return cleaned.trim()
   }
@@ -200,44 +208,50 @@ class MistralOCRService {
 
   // Stitch text from image-only pages or pages that look like terpene panel
   private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
-    const resp = ocrResponse as any
-    if (!resp?.pages?.length) return currentMarkdown
+  const resp = ocrResponse as any
+  if (!resp?.pages?.length) return currentMarkdown
 
-    let combined = currentMarkdown
+  let combined = currentMarkdown
 
-    for (let i = 0; i < resp.pages.length; i++) {
-      const page = resp.pages[i]
-      const md = page?.markdown || ''
-      
-      // Check if page is primarily an image
-      const isImagePlaceholder = /^[!\s]*\[img[^\]]*\]\([^)]+\)[!\s]*$/i.test(md.trim())
-      const hasMinimalText = md.trim().length < 150
-      const pageHasTerpHeader = this.TERP_HDR.test(md)
-      const looksImageOnly = !/\w{3,}/.test(md) || isImagePlaceholder
-      const shouldOCR = isImagePlaceholder || hasMinimalText || looksImageOnly || pageHasTerpHeader
-      
-      if (shouldOCR || looksImageOnly || pageHasTerpHeader) {
-        const imgs = this.pageImageBase64s(page)
-        if (imgs.length > 0) {
-          console.log(`🖼️  Page ${i + 1} has images, running image OCR...`)
-          for (const b64 of imgs) {
-            const imgText = await this.ocrBase64Image(b64)
-            if (imgText && imgText.trim().length > 50) {
-              combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
-              console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1} image`)
+  for (let i = 0; i < resp.pages.length; i++) {
+    const page = resp.pages[i]
+    const md = page?.markdown || ''
+    
+    // ENHANCED: More aggressive image detection
+    const isImagePlaceholder = /!\[img[^\]]*\]/i.test(md)
+    const hasMinimalText = md.trim().length < 200
+    const pageHasTerpHeader = this.TERP_HDR.test(md)
+    const looksImageOnly = !/[A-Z]{3,}/.test(md) || isImagePlaceholder
+    const hasWeirdSpacing = /\*[A-Z]\*\s*\*[A-Z]\*/i.test(md) // Detects "*M* *O* *U*" pattern
+    
+    // CRITICAL: Always OCR pages 1-2 since terpenes are usually there
+    const shouldOCR = i < 2 || isImagePlaceholder || hasMinimalText || 
+                      looksImageOnly || pageHasTerpHeader || hasWeirdSpacing
+    
+    if (shouldOCR) {
+      const imgs = this.pageImageBase64s(page)
+      if (imgs.length > 0) {
+        console.log(`🖼️  Page ${i + 1}: Running image OCR (${imgs.length} images)`)
+        for (const b64 of imgs) {
+          const imgText = await this.ocrBase64Image(b64)
+          if (imgText && imgText.trim().length > 50) {
+            combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
+            console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1}`)
+            
+            // Check if we got terpenes
+            if (this.TERP_HDR.test(imgText)) {
+              console.log(`🌿 TERPENE DATA FOUND in page ${i + 1} image!`)
             }
           }
-        } else {
-          console.log(`⚠️  Page ${i + 1} should have images but none found`)
         }
+      } else {
+        console.log(`⚠️  Page ${i + 1} flagged for OCR but no images available`)
+        console.log(`     Markdown preview: ${md.substring(0, 150)}`)
       }
     }
-    
-    if (combined.length > currentMarkdown.length) {
-      console.log(`📊 Image OCR added ${combined.length - currentMarkdown.length} chars`)
-    }
-    
-    return combined
+  }
+  
+  return combined
   }
 
   // --- Public: main entry ---------------------------------------------------
