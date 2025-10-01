@@ -234,56 +234,66 @@ function river2SpecificExtraction(text: string): ExtractedData {
   }
   const clean = text.replace(/\s+/g, ' ').trim()
 
-  const batch = clean.match(/(?:BATCH\s*ID\s*:?\s*)?(EVM?\d{4,})/i)
-  if (batch) { res.batchId = batch[1]; res.confidence += 15 }
+  // FIXED: Catch both EVM#### and EV#### patterns
+  const batch = clean.match(/BATCH\s+ID\s*:?\s*(EV[M]?\d{4})/i)
+  if (batch) { 
+    res.batchId = batch[1]
+    res.confidence += 15
+    console.log(`✅ Batch ID: ${batch[1]}`)
+  }
 
-  const sample = clean.match(/SAMPLE\s*:\s*([A-Z][A-Z\s&-]+?)\s*\(?FLOWER/i)
-  if (sample) { res.strainName = sample[1].trim(); res.confidence += 10 }
+  // FIXED: More robust strain extraction
+  const sample = clean.match(/SAMPLE\s*:?\s*([A-Z][A-Z\s&'-]+?)\s*\(?(?:FLOWER|\(FLOWER)/i)
+  if (sample) { 
+    res.strainName = sample[1].trim()
+    res.confidence += 10
+    console.log(`✅ Strain: ${sample[1].trim()}`)
+  }
 
-  if (/FLOWER|MATRIX:\s*FLOWER/i.test(text)) { res.subCategory = 'FLOWER'; res.confidence += 5 }
+  if (/MATRIX:\s*FLOWER/i.test(text)) { 
+    res.subCategory = 'FLOWER'
+    res.confidence += 5 
+  }
 
-  res.thcPercentage = extractCannabinoidValue(clean, 'THC')
-  res.cbdPercentage = extractCannabinoidValue(clean, 'CBD')
-  res.totalCannabinoids = extractCannabinoidValue(clean, 'TOTAL CANNABINOIDS')
+  // FIXED: Better cannabinoid extraction
+  res.thcPercentage = extractCannabinoidValue(text, 'THC')
+  res.cbdPercentage = extractCannabinoidValue(text, 'CBD')
+  res.totalCannabinoids = extractCannabinoidValue(text, 'TOTAL CANNABINOIDS')
 
   if (res.thcPercentage != null) res.confidence += 25
   if (res.cbdPercentage != null) res.confidence += 20
   if (res.totalCannabinoids != null) res.confidence += 20
 
-  // test date (from produced/tested lines)
   const iso = extractTestDateISO(text)
-  if (iso) { res.testDate = iso; res.confidence += 5 }
+  if (iso) { 
+    res.testDate = iso
+    res.confidence += 5 
+  }
 
-  // ✅ ENHANCED TERPENE EXTRACTION
+  // FIXED: Enhanced terpene extraction
   if (hasTerpenePanel(text)) {
-    console.log('🌿 Attempting 2River-specific terpene extraction...')
+    console.log('🌿 2River terpene panel detected')
     const terpPanel = findTerpenePanel(text)
     
     if (terpPanel) {
-      // Try the enhanced extractor first
       let terpList = extractTerpenesFrom2RiverPanel(terpPanel)
       
-      // If still empty, try the loose text scraper as fallback
       if (terpList.length === 0 && typeof extractTerpenesFromLooseText === 'function') {
-        console.log('⚠️  Panel extraction failed, trying loose text scraper...')
+        console.log('⚠️  Trying loose fallback...')
         terpList = extractTerpenesFromLooseText(terpPanel)
       }
       
-      // Keep only top 3
       res.terpenes = terpList.slice(0, 3)
-      console.log('2river terpenes extracted:', res.terpenes)
       
       if (terpList.length > 0) {
-        res.confidence += 8
+        res.confidence += 10
+        console.log(`✅ Found ${terpList.length} terpenes`)
       }
-    } else {
-      console.log('⚠️  Terpene panel detected but could not slice it')
     }
   }
 
   return res
 }
-
 /**
 
 * @function hasTerpenePanel
@@ -681,123 +691,60 @@ function extractTerpenesFromPanel(panel: string): Array<{ name: string; percenta
 function extractTerpenesFrom2RiverPanel(panel: string): Array<{ name: string; percentage: number }> {
   const results: Map<string, number> = new Map()
   
-  console.log('=== ENHANCED 2RIVER TERPENE EXTRACTION ===')
+  console.log('\n=== 2RIVER TERPENE EXTRACTION ===')
   console.log('Panel length:', panel.length)
-  console.log('Panel preview (first 800 chars):\n', panel.substring(0, 800))
+  console.log('Panel preview (first 600 chars):\n', panel.substring(0, 600))
   
-  // Known 2 River terpene names (from your image)
-  const KNOWN_TERPENES = [
-    'D-LIMONENE', 'BETA-MYRCENE', 'BETA-CARYOPHYLLENE', 'LINALOOL',
-    'ALPHA-HUMULENE', 'TRANS-NEROLIDOL', 'BETA-PINENE', 'ALPHA-PINENE',
-    'ALPHA-BISABOLOL', 'CAMPHENE', 'CARYOPHYLLENE OXIDE', 'DELTA-3-CARENE',
-    'EUCALYPTOL', 'GERANIOL', 'TERPINOLENE', 'ALPHA-TERPINENE',
-    'BETA-OCIMENE', 'CIS-NEROLIDOL', 'CIS-OCIMENE', 'GAMMA-TERPINENE',
-    'P-CYMENE', 'TRANS-OCIMENE', 'GUAIOL', 'ISOPULEGOL'
-  ]
-
   const lines = panel.split('\n')
+  let parsedCount = 0
   
-  // Strategy 1: Look for lines with terpene name followed by percentage
-  // Format: "D-LIMONENE    0.514 %   5.14 mg/g   0.124/0.373   N/A"
   for (const line of lines) {
-    // Skip header rows and non-data lines
-    if (/ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL|TOTAL TERPENES/i.test(line)) continue
+    // Skip headers and non-data
+    if (/ANALYTE|AMT|LOD|LOQ|PASS|FAIL|TOTAL TERPENES|M-025S/i.test(line)) continue
     if (line.trim().length < 10) continue
+    if (/^[\s|_\-]+$/.test(line)) continue
     
-    // Try to match: terpene name + percentage
-    // Handle both "0.514 %" and "0.514%" formats
-    const match = line.match(/([A-Z][A-Z0-9\-\s]+?)\s+(\d+\.?\d*)\s*%/i)
+    // FIXED: Flexible regex for terpene rows
+    // Handles both Greek (β, α) and ASCII (BETA-, ALPHA-)
+    // Format: "β-MYRCENE     0.483 %  4.83 mg/g"
+    // Format: "D-LIMONENE    0.514 %  5.14 mg/g"
+    const match = line.match(/^([βαγΔA-Z][\wβαγΔ\-\s]+?)\s{2,}(\d+\.?\d*)\s*%/i)
     
     if (match) {
       const rawName = match[1].trim()
       const percentage = parseFloat(match[2])
       
-      // Normalize the name and check if it's a known terpene
-      const normalizedName = normalizeTerpName(rawName)
+      // Skip ND or < LOQ values
+      if (/\bND\b|<\s*LOQ/i.test(line)) continue
       
-      // Only accept if it's a known terpene and valid percentage
+      // Validate percentage range
       if (percentage > 0 && percentage < 20) {
-        const isKnown = KNOWN_TERPENES.some(kt => 
-          normalizedName.toUpperCase().includes(kt) || 
-          kt.includes(normalizedName.toUpperCase())
-        )
-        
-        if (isKnown) {
-          console.log(`✅ Found: ${normalizedName} = ${percentage}%`)
-          results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
-        }
-      }
-    }
-  }
-  
-  // Strategy 2: If no results, try looking for mg/g values and convert to %
-  if (results.size === 0) {
-    console.log('⚠️  No % values found, trying mg/g conversion...')
-    
-    for (const line of lines) {
-      if (/ANALYTE|AMT|LOD\/LOQ|PASS\/FAIL|TOTAL TERPENES/i.test(line)) continue
-      
-      // Match: terpene name + mg/g value
-      // Format: "D-LIMONENE    5.14 mg/g"
-      const match = line.match(/([A-Z][A-Z0-9\-\s]+?)\s+(\d+\.?\d*)\s*mg\/g/i)
-      
-      if (match) {
-        const rawName = match[1].trim()
-        const mgPerG = parseFloat(match[2])
-        const percentage = mgPerG * 0.1 // Convert mg/g to %
-        
         const normalizedName = normalizeTerpName(rawName)
         
-        if (percentage > 0 && percentage < 20) {
-          const isKnown = KNOWN_TERPENES.some(kt => 
-            normalizedName.toUpperCase().includes(kt) || 
-            kt.includes(normalizedName.toUpperCase())
-          )
-          
-          if (isKnown) {
-            console.log(`✅ Found (mg/g): ${normalizedName} = ${percentage}%`)
-            results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
-          }
-        }
-      }
-    }
-  }
-  
-  // Strategy 3: Ultra-loose fallback - look for ANY terpene name near ANY number
-  if (results.size === 0) {
-    console.log('⚠️  Still no results, trying loose pattern matching...')
-    
-    const text = panel.toLowerCase()
-    
-    for (const terpName of KNOWN_TERPENES.slice(0, 10)) { // Just check top 10 common ones
-      const searchName = terpName.toLowerCase().replace(/-/g, '[\\s-]?')
-      const regex = new RegExp(`${searchName}[^\\n]{0,80}?(\\d+\\.\\d+)\\s*(%|mg\\/g)`, 'i')
-      const match = text.match(regex)
-      
-      if (match) {
-        let percentage = parseFloat(match[1])
-        if (match[2].toLowerCase().includes('mg')) {
-          percentage *= 0.1
-        }
-        
-        if (percentage > 0 && percentage < 20) {
-          const normalizedName = normalizeTerpName(terpName)
-          console.log(`✅ Found (loose): ${normalizedName} = ${percentage}%`)
+        // Validate it's a real terpene name (not junk)
+        if (normalizedName.length >= 4 && /[A-Za-z]/.test(normalizedName)) {
+          console.log(`  ✅ Line: "${line.substring(0, 70)}"`)
+          console.log(`     Parsed: ${normalizedName} = ${percentage}%`)
           results.set(normalizedName, Math.max(results.get(normalizedName) || 0, percentage))
+          parsedCount++
         }
       }
     }
   }
   
-  // Convert to array and sort by percentage
+  console.log(`\nParsed ${parsedCount} terpene rows`)
+  
   const terpenes = Array.from(results.entries())
     .map(([name, percentage]) => ({ name, percentage }))
     .sort((a, b) => b.percentage - a.percentage)
-    .slice(0, 3) // Top 3 only
+    .slice(0, 3)
   
-  console.log('=== FINAL TERPENE RESULTS ===')
-  console.log('Total found:', terpenes.length)
-  terpenes.forEach((t, i) => console.log(`${i + 1}. ${t.name}: ${t.percentage}%`))
+  console.log('\n=== TOP 3 TERPENES ===')
+  if (terpenes.length === 0) {
+    console.log('❌ No terpenes extracted')
+  } else {
+    terpenes.forEach((t, i) => console.log(`${i + 1}. ${t.name}: ${t.percentage}%`))
+  }
   
   return terpenes
 }
@@ -841,34 +788,32 @@ function findTerpenePanel(text: string): string | null {
 
 
 function normalizeTerpName(raw: string): string {
-  const n = raw
-    .replace(/β|&beta;|BETA/gi, 'Beta-')
-    .replace(/α|&alpha;|ALPHA/gi, 'Alpha-')
-    .replace(/γ|&gamma;|GAMMA/gi, 'Gamma-')
-    .replace(/TRANS-|CIS-/gi, '')
-    .replace(/-OXIDE/gi, ' Oxide')
-    .replace(/[^A-Za-z -]/g, '')
+  let n = raw
+    // Normalize Greek letters (keep them but clean spacing)
+    .replace(/β\s*-?\s*/gi, 'β-')
+    .replace(/α\s*-?\s*/gi, 'α-')
+    .replace(/γ\s*-?\s*/gi, 'γ-')
+    .replace(/Δ\s*-?\s*/gi, 'Δ-')
+    // Also handle ASCII versions if they sneak in
+    .replace(/BETA\s*-?\s*/gi, 'β-')
+    .replace(/ALPHA\s*-?\s*/gi, 'α-')
+    .replace(/GAMMA\s*-?\s*/gi, 'γ-')
+    .replace(/DELTA\s*-?\s*/gi, 'Δ-')
+    // Clean whitespace and dashes
+    .replace(/\s+/g, ' ')
+    .replace(/\s*-\s*/g, '-')
+    .replace(/-+/g, '-')
     .trim()
-    .toLowerCase()
-  // map common forms
-  const map: Record<string,string> = {
-    'limonene': 'Limonene',
-    'beta-myrcene': 'Myrcene', 'myrcene': 'Myrcene',
-    'beta-caryophyllene': 'Caryophyllene', 'caryophyllene': 'Caryophyllene',
-    'linalool': 'Linalool',
-    'alpha-humulene': 'Humulene', 'humulene': 'Humulene',
-    'beta-pinene': 'Beta-Pinene', 'pinene': 'Pinene', 'alpha-pinene': 'Alpha-Pinene',
-    'bisabolol': 'Bisabolol',
-    'terpinolene': 'Terpinolene',
-    'ocimene': 'Ocimene', 'cis-ocimene': 'Ocimene',
-    'eucalyptol': 'Eucalyptol',
-    'geraniol': 'Geraniol',
-    'guaiol': 'Guaiol',
-    'p-cymene': 'p-Cymene', 'cymene': 'Cymene',
-    'camphene': 'Camphene',
-    'caryophyllene oxide': 'Caryophyllene Oxide'
-  }
-  return map[n] || n.replace(/\b\w/g, c => c.toUpperCase())
+  
+  // Remove trailing dash
+  n = n.replace(/-$/, '')
+  
+  // Capitalize each part (except Greek letters)
+  const parts = n.split('-')
+  return parts.map(part => {
+    if (/^[βαγΔ]$/.test(part)) return part // Keep Greek as-is
+    return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+  }).join('-')
 }
 
 /**
@@ -897,6 +842,32 @@ function parseAmtToPercent(amt: string): number | null {
   if (bare) return parseFloat(bare[1])
 
   return null
+}
+
+// Add to dataExtractor.ts for debugging
+function diagnoseTerpeneSection(text: string) {
+  const panel = findTerpenePanel(text)
+  if (!panel) {
+    console.log('❌ No terpene panel found')
+    return
+  }
+  
+  console.log('=== TERPENE PANEL DIAGNOSIS ===')
+  console.log('Panel length:', panel.length)
+  console.log('First 800 chars:')
+  console.log(panel.substring(0, 800))
+  
+  const lines = panel.split('\n').slice(0, 20)
+  console.log('\nFirst 20 lines:')
+  lines.forEach((line, i) => {
+    console.log(`${i}: "${line}"`)
+  })
+  
+  console.log('\nGreek letter check:')
+  console.log('Contains β:', /β/.test(panel))
+  console.log('Contains BETA:', /BETA/i.test(panel))
+  console.log('Contains α:', /α/.test(panel))
+  console.log('Contains ALPHA:', /ALPHA/i.test(panel))
 }
 
 /**
@@ -1018,50 +989,64 @@ function extractTerpenesFromLooseText(text: string): Array<{ name: string; perce
 
 
 function extractCannabinoidValue(text: string, cannabinoidType: string): number | undefined {
-  // Strategy 1: Look for CANNABINOID OVERVIEW section first (most reliable)
-  const overviewMatch = text.match(/CANNABINOID\s+OVERVIEW[\s\S]{0,800}?BATCH\s+RESULT/i)
+  console.log(`\n=== Extracting ${cannabinoidType} ===`)
+  
+  // Strategy 1: CANNABINOID OVERVIEW section (most reliable)
+  const overviewMatch = text.match(/CANNABINOID\s+OVERVIEW[\s\S]{0,1200}?(?=CULTIVATOR|DISTRIBUTOR|BATCH RESULT)/i)
   if (overviewMatch) {
     const overviewSection = overviewMatch[0]
+    console.log('Found CANNABINOID OVERVIEW section')
     
-    // Extract from "TOTAL THC:", "TOTAL CBD:", "TOTAL CANNABINOIDS:" lines
-    const totalPattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:?\\s*(\\d+\\.\\d+)\\s*%`, 'i')
+    // FIXED: Precise pattern that won't capture dates
+    // Match "TOTAL THC: 27.1 %" format (colon required)
+    const totalPattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:\\s*(\\d+\\.\\d+)\\s*%`, 'i')
     const match = overviewSection.match(totalPattern)
     
     if (match) {
       const value = parseFloat(match[1])
+      console.log(`✅ Found ${cannabinoidType} in overview: ${value}%`)
       if (isValidCannabinoidValue(value, cannabinoidType)) {
         return value
       }
     }
   }
 
-  // Strategy 2: Look for "TOTAL [TYPE]:" pattern anywhere in text
-  const totalPattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*:?\\s*(\\d+\\.\\d+)\\s*%`, 'i')
-  const totalMatch = text.match(totalPattern)
+  // Strategy 2: M-024 POTENCY table
+  const potencyMatch = text.match(/M-024:\s*POTENCY[\s\S]{0,800}?(?=M-\d{3}|REGULATORY|$)/i)
+  if (potencyMatch) {
+    const potencySection = potencyMatch[0]
+    console.log('Found M-024 POTENCY section')
+    
+    // Match table row: "TOTAL THC**  27.1 %  271 mg/g"
+    const tablePattern = new RegExp(`TOTAL\\s+${cannabinoidType}\\s*\\*{0,2}\\s+(\\d+\\.\\d+)\\s*%`, 'i')
+    const match = potencySection.match(tablePattern)
+    
+    if (match) {
+      const value = parseFloat(match[1])
+      console.log(`✅ Found ${cannabinoidType} in potency table: ${value}%`)
+      if (isValidCannabinoidValue(value, cannabinoidType)) {
+        return value
+      }
+    }
+  }
+
+  // Strategy 3: Last resort - anywhere in text
+  // CRITICAL: Use negative lookahead to avoid matching years like "27.2024"
+  const globalPattern = new RegExp(
+    `TOTAL\\s+${cannabinoidType}\\s*[:\\*]?\\s+(\\d+\\.\\d+)\\s*%(?!\\s*\\d{4})`, 
+    'i'
+  )
+  const globalMatch = text.match(globalPattern)
   
-  if (totalMatch) {
-    const value = parseFloat(totalMatch[1])
+  if (globalMatch) {
+    const value = parseFloat(globalMatch[1])
+    console.log(`✅ Found ${cannabinoidType} globally: ${value}%`)
     if (isValidCannabinoidValue(value, cannabinoidType)) {
       return value
     }
   }
 
-  // Strategy 3: Fallback - look in M-024: POTENCY section
-  const potencyMatch = text.match(/M-024:\s*POTENCY[\s\S]{0,600}?(?=M-\d{3}|$)/i)
-  if (potencyMatch) {
-    const potencySection = potencyMatch[0]
-    const fallbackPattern = new RegExp(`TOTAL\\s+${cannabinoidType}[^\\d]*(\\d+\\.\\d+)\\s*%`, 'i')
-    const match = potencySection.match(fallbackPattern)
-    
-    if (match) {
-      const value = parseFloat(match[1])
-      if (isValidCannabinoidValue(value, cannabinoidType)) {
-        return value
-      }
-    }
-  }
-
-  // No valid value found
+  console.log(`❌ No valid ${cannabinoidType} found`)
   return undefined
 }
 

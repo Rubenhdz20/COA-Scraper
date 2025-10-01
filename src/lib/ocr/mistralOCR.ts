@@ -45,7 +45,7 @@ class MistralOCRService {
     return base64Pdf
   }
 
- private extractTextFromResponse(ocrResponse: any): string {
+  private extractTextFromResponse(ocrResponse: any): string {
   try {
     if (ocrResponse?.pages && Array.isArray(ocrResponse.pages)) {
       const allMarkdown = ocrResponse.pages
@@ -87,47 +87,49 @@ class MistralOCRService {
   } catch {
     return ''
   }
-}
+  }
 
   // Keep table characters; only normalize numbers/spacing.
   private cleanOCRTextForCOA(text: string): string {
-    console.log('Starting comprehensive OCR text cleaning...')
-    let cleaned = text
+  console.log('Starting comprehensive OCR text cleaning...')
+  let cleaned = text
 
-    // 1) Mild markdown cleanup — DO NOT strip table pipes/rows
-    cleaned = cleaned
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/\*(.*?)\*/g, '$1')
-      .replace(/`(.*?)`/g, '$1')
-      .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+  // 1) Mild markdown cleanup
+  cleaned = cleaned
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
 
-    // 2) Character / number fixes
-    cleaned = cleaned
-      .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')            // 24,2 -> 24.2
-      .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')            // 24;2 -> 24.2
-      .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')     // 24 2% -> 24.2%
-      .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')          // unify percent
-      .replace(/TH[CG]/gi, 'THC')
-      .replace(/CB[DO]/gi, 'CBD')
-      .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
-      .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
-      .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
-      .replace(/β/gi, 'BETA-')
-      .replace(/α/gi, 'ALPHA-')
-      .replace(/γ/gi, 'GAMMA-')
-      .replace(/Δ/gi, 'DELTA-')
+  // 2) Character / number fixes
+  cleaned = cleaned
+    .replace(/(\d)\s*,\s*(\d)/g, '$1.$2')
+    .replace(/(\d)\s*;\s*(\d)/g, '$1.$2')
+    .replace(/(\d+)\s+(\d{1,4})\s*%/g, '$1.$2%')
+    .replace(/(\d+\.?\d*)\s*[%º°]/g, '$1%')
+    .replace(/TH[CG]/gi, 'THC')
+    .replace(/CB[DO]/gi, 'CBD')
+    .replace(/TOTAL\s+THC/gi, 'TOTAL THC')
+    .replace(/TOTAL\s+CBD/gi, 'TOTAL CBD')
+    .replace(/TOTAL\s+CANNABIN(O|0)IDS/gi, 'TOTAL CANNABINOIDS')
+    
+    // CRITICAL FIX: Keep Greek letters - don't convert them
+    // This allows terpene regex to match the original characters
+    // .replace(/β/gi, 'BETA-')  // REMOVED
+    // .replace(/α/gi, 'ALPHA-')  // REMOVED
+    // .replace(/γ/gi, 'GAMMA-')  // REMOVED
+    // .replace(/Δ/gi, 'DELTA-')  // REMOVED
 
-    // 3) CRITICAL: Only normalize EXCESSIVE whitespace (3+ spaces/tabs)
-    // This preserves table alignment while cleaning up messy text
-    cleaned = cleaned
-      .replace(/[ \t]{3,}/g, '  ')  // 3+ spaces -> 2 spaces (preserves columns)
-      .replace(/\r\n/g, '\n')        // normalize line endings
-      .replace(/\n{3,}/g, '\n\n')    // max 2 consecutive newlines
+  // 3) Preserve table structure
+  cleaned = cleaned
+    .replace(/[ \t]{3,}/g, '  ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
 
-    // 4) Ensure breaks before page headers to help slicing
-    cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE')
+  // 4) Ensure breaks before page headers
+  cleaned = cleaned.replace(/=== PAGE/g, '\n=== PAGE')
 
-    return cleaned.trim()
+  return cleaned.trim()
   }
 
   private estimateConfidence(text: string, ocrResponse: any): number {
