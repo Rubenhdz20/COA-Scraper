@@ -48,3 +48,6 @@ next-env.d.ts
 .env
 uploads/
 prisma/dev.db
+
+# Internal or AI-generated documentation
+CLAUDE.md
