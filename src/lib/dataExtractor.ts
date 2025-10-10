@@ -694,8 +694,27 @@ function extractTerpenesFrom2RiverPanel(panel: string): Array<{ name: string; pe
   console.log('\n=== 2RIVER TERPENE EXTRACTION ===')
   console.log('Panel length:', panel.length)
   console.log('Panel preview (first 600 chars):\n', panel.substring(0, 600))
-  
+
+
+  // ADD THIS DIAGNOSTIC SECTION ⬇️⬇️⬇️
+  console.log('\n=== DIAGNOSTIC: First 15 lines ===')
   const lines = panel.split('\n')
+  lines.slice(0, 15).forEach((line, i) => {
+    console.log(`Line ${i}: "${line}"`)
+  })
+
+   // Check what format we're receiving
+  const hasCommaFormat = /,/.test(panel)
+  const hasPercentages = /\d+\.\d+\s*%/.test(panel)
+  const hasMgG = /\d+\.\d+\s*mg\/g/i.test(panel)
+  
+  console.log('\nFormat detection:')
+  console.log('  Has commas:', hasCommaFormat)
+  console.log('  Has percentages:', hasPercentages)
+  console.log('  Has mg/g:', hasMgG)
+  console.log('=== END DIAGNOSTIC ===\n')
+  // END DIAGNOSTIC SECTION ⬆️⬆️⬆️
+
   let parsedCount = 0
   
   for (const line of lines) {
@@ -996,10 +1015,11 @@ function extractCannabinoidValue(text: string, cannabinoidType: string): number 
   if (overviewMatch) {
     const overviewSection = overviewMatch[0]
     console.log('Found CANNABINOID OVERVIEW section')
+    console.log('Overview preview:', overviewSection.substring(0, 300)) // ADD THIS
     
-    // FIXED: More precise - require colon and avoid dates
+    // FIXED: Allow 1-4 digits after decimal, but prevent year capture
     const totalPattern = new RegExp(
-      `TOTAL\\s+${cannabinoidType}\\s*:\\s*(\\d+\\.\\d{1,2})\\s*%(?!\\d)`, 
+      `TOTAL\\s+${cannabinoidType}\\s*:\\s*(\\d{1,2}\\.\\d{1,4})\\s*%(?!\\s*\\d{4})`, 
       'i'
     )
     const match = overviewSection.match(totalPattern)
@@ -1008,23 +1028,25 @@ function extractCannabinoidValue(text: string, cannabinoidType: string): number 
       const value = parseFloat(match[1])
       console.log(`✅ Found ${cannabinoidType} in overview: ${value}%`)
       
-      // CRITICAL: Validate it's not a date (no value should be > 100%)
-      if (value <= 100 && isValidCannabinoidValue(value, cannabinoidType)) {
+      // STRICT: Reject if value looks like a date (> 100 or contains year pattern)
+      if (value > 0 && value <= 50 && isValidCannabinoidValue(value, cannabinoidType)) {
         return value
       } else {
-        console.log(`⚠️  Value ${value} rejected (out of valid range)`)
+        console.log(`⚠️  Value ${value} rejected (likely invalid: out of 0-50 range)`)
       }
+    } else {
+      console.log(`⚠️  No match for TOTAL ${cannabinoidType} pattern in overview`)
     }
   }
 
-  // Strategy 2: M-024 table
+  // Strategy 2: M-024 POTENCY table
   const potencyMatch = text.match(/M-024:\s*POTENCY[\s\S]{0,800}?(?=M-\d{3}|REGULATORY|$)/i)
   if (potencyMatch) {
     const potencySection = potencyMatch[0]
     console.log('Found M-024 POTENCY section')
     
     const tablePattern = new RegExp(
-      `TOTAL\\s+${cannabinoidType}\\s*\\*{0,2}\\s+(\\d+\\.\\d{1,2})\\s*%(?!\\d)`, 
+      `TOTAL\\s+${cannabinoidType}\\s*\\*{0,2}\\s+(\\d{1,2}\\.\\d{1,4})\\s*%(?!\\s*\\d{4})`, 
       'i'
     )
     const match = potencySection.match(tablePattern)
@@ -1032,7 +1054,7 @@ function extractCannabinoidValue(text: string, cannabinoidType: string): number 
     if (match) {
       const value = parseFloat(match[1])
       console.log(`✅ Found ${cannabinoidType} in table: ${value}%`)
-      if (value <= 100 && isValidCannabinoidValue(value, cannabinoidType)) {
+      if (value > 0 && value <= 50 && isValidCannabinoidValue(value, cannabinoidType)) {
         return value
       }
     }

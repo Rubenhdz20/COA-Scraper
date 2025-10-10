@@ -207,7 +207,7 @@ class MistralOCRService {
   }
 
   // Stitch text from image-only pages or pages that look like terpene panel
-  private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
+ private async appendImageOnlyPageText(ocrResponse: any, currentMarkdown: string): Promise<string> {
   const resp = ocrResponse as any
   if (!resp?.pages?.length) return currentMarkdown
 
@@ -221,27 +221,46 @@ class MistralOCRService {
     const isImagePlaceholder = /!\[img[^\]]*\]/i.test(md)
     const hasMinimalText = md.trim().length < 200
     const pageHasTerpHeader = this.TERP_HDR.test(md)
+    const hasPercentages = /\d+\.\d+\s*%/.test(md)
+    const terpHeaderWithoutData = pageHasTerpHeader && !hasPercentages
     const looksImageOnly = !/[A-Z]{3,}/.test(md) || isImagePlaceholder
     const hasWeirdSpacing = /\*[A-Z]\*\s*\*[A-Z]\*/i.test(md) // Detects "*M* *O* *U*" pattern
     
     // CRITICAL: Always OCR pages 1-2 since terpenes are usually there
-    const shouldOCR = i < 2 || isImagePlaceholder || hasMinimalText || 
-                      looksImageOnly || pageHasTerpHeader || hasWeirdSpacing
+    const shouldOCR = i < 2 || 
+                  terpHeaderWithoutData || 
+                  isImagePlaceholder || 
+                  hasMinimalText || 
+                  looksImageOnly || 
+                  hasWeirdSpacing
     
     if (shouldOCR) {
       const imgs = this.pageImageBase64s(page)
       if (imgs.length > 0) {
-        console.log(`🖼️  Page ${i + 1}: Running image OCR (${imgs.length} images)`)
+        console.log(`🖼️  Page ${i + 1}: Running image OCR (reason: ${
+          terpHeaderWithoutData ? 'terpene header without data' :
+          i < 2 ? 'first 2 pages' :
+          isImagePlaceholder ? 'image placeholder' :
+          'other'
+        })`)
+        
         for (const b64 of imgs) {
           const imgText = await this.ocrBase64Image(b64)
           if (imgText && imgText.trim().length > 50) {
             combined += `\n\n=== PAGE ${i + 1} IMAGE OCR ===\n${imgText}`
             console.log(`✅ Extracted ${imgText.length} chars from page ${i + 1}`)
             
-            // Check if we got terpenes
-            if (this.TERP_HDR.test(imgText)) {
-              console.log(`🌿 TERPENE DATA FOUND in page ${i + 1} image!`)
+            // ADD THIS SECTION HERE ⬇️⬇️⬇️
+            // Verify we got actual data with percentages
+            const imgHasPercentages = /\d+\.\d+\s*%/.test(imgText)
+            const imgHasTerpHeader = this.TERP_HDR.test(imgText)
+            
+            if (imgHasTerpHeader && imgHasPercentages) {
+              console.log(`🌿 SUCCESS: Terpene data with percentages found in image OCR!`)
+            } else if (imgHasTerpHeader && !imgHasPercentages) {
+              console.log(`⚠️  WARNING: Terpene header found but still no percentage data`)
             }
+            // END NEW SECTION ⬆️⬆️⬆️
           }
         }
       } else {
@@ -251,8 +270,12 @@ class MistralOCRService {
     }
   }
   
-  return combined
+  if (combined.length > currentMarkdown.length) {
+    console.log(`📊 Image OCR added ${combined.length - currentMarkdown.length} chars`)
   }
+  
+  return combined
+}
 
   // --- Public: main entry ---------------------------------------------------
 
