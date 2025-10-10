@@ -9,14 +9,14 @@
 **COA Scraper** is a Next.js application designed to automate the extraction of key information from cannabis Certificates of Analysis (COAs) in PDF format.  
 It leverages **AI-powered OCR** and a **multi-strategy extraction engine** to accurately identify and validate cannabinoid data, terpene profiles, strain names, and batch identifiers across diverse laboratory templates.
 
-The system provides real-time processing feedback, confidence scoring, and export capabilities for structured reporting — eliminating the need for manual data entry and reducing processing time dramatically.
+The system provides real-time processing feedback, confidence scoring, and export capabilities for structured reporting, eliminating the need for manual data entry and reducing processing time dramatically.
 
 ---
 
 ## ⚙️ Key Features
 - **AI-Powered OCR** using Mistral AI v1.10 for high-accuracy text recognition.  
 - **Multi-Strategy Extraction Engine** with lab-specific algorithms (2River Labs, SC Labs, Steep Hill).  
-- **Advanced Text Processing** — normalization, pattern recognition, and data validation with confidence scoring.  
+- **Advanced Text Processing** normalization, pattern recognition, and data validation with confidence scoring.  
 - **Real-Time Status Tracking** via asynchronous queues and polling.  
 - **Copy-to-Clipboard & CSV Export** for single or multiple documents.  
 - **Responsive UI** built with React 19 + Tailwind 4.  
