@@ -233,6 +233,23 @@ class MistralOCRService {
                   hasMinimalText || 
                   looksImageOnly || 
                   hasWeirdSpacing
+                  
+    // ADD THIS DEBUG SECTION ⬇️⬇️⬇️
+    console.log(`\n=== PAGE ${i + 1} IMAGE OCR CHECK ===`)
+    console.log('Page index:', i)
+    console.log('Should OCR?', shouldOCR)
+    console.log('Reasons:')
+    console.log('  - First 2 pages (i < 2):', i < 2)
+    console.log('  - Terpene header without data:', terpHeaderWithoutData)
+    console.log('  - Is image placeholder:', isImagePlaceholder)
+    console.log('  - Has minimal text:', hasMinimalText)
+    console.log('  - Looks image only:', looksImageOnly)
+    console.log('  - Has weird spacing:', hasWeirdSpacing)
+    
+    const imgs = this.pageImageBase64s(page)
+    console.log('Images available:', imgs.length)
+    console.log('=== END PAGE CHECK ===\n')
+    // END DEBUG SECTION ⬆️⬆️⬆️              
     
     if (shouldOCR) {
       const imgs = this.pageImageBase64s(page)
