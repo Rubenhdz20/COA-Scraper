@@ -62,4 +62,3 @@ The current version delivers a fully functional, production-ready COA extraction
 ---
 
 © 2025 Ruben Hernandez Alvarado — Frontend Developer  
-This repository is for portfolio and demonstration purposes.
